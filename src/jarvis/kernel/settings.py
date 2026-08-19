@@ -55,6 +55,21 @@ class Settings(BaseSettings):
 
     # Anthropic
     anthropic_api_key: SecretStr = Field(default=SecretStr(""), description="Clé API Anthropic.")
+    anthropic_auth_token: SecretStr = Field(
+        default=SecretStr(""),
+        description=(
+            "Token Bearer Anthropic-compatible (ANTHROPIC_AUTH_TOKEN), comme Claude Code. "
+            "Utilisé à la place ou en plus de ANTHROPIC_API_KEY sur un proxy "
+            "(LiteLLM, synterolink, OpenRouter, etc.)."
+        ),
+    )
+    anthropic_base_url: str = Field(
+        default="",
+        description=(
+            "URL de base Anthropic-compatible (ANTHROPIC_BASE_URL). "
+            "Vide = https://api.anthropic.com. Ex. https://api.synterolink.com"
+        ),
+    )
     anthropic_model: str = Field(
         default="claude-sonnet-4-6",
         description="Modèle Anthropic à utiliser.",
@@ -241,6 +256,13 @@ class Settings(BaseSettings):
         default=SecretStr(""),
         description="Clé API OpenAI (LLM principal si api_backend=openai, TTS, Vision).",
     )
+    openai_base_url: str = Field(
+        default="",
+        description=(
+            "URL de base OpenAI-compatible (OPENAI_BASE_URL). "
+            "Vide = https://api.openai.com/v1. Ex. https://api.synterolink.com/v1"
+        ),
+    )
     stt_provider: Literal["deepgram", "openai", "google", "whisper"] = Field(
         default="deepgram",
         description=(
@@ -352,6 +374,13 @@ class Settings(BaseSettings):
     deezer_token_path: str = Field(
         default="config/deezer_token.json",
         description="Fichier de token Deezer (généré automatiquement).",
+    )
+    deezer_arl: SecretStr = Field(
+        default=SecretStr(""),
+        description=(
+            "Cookie ARL Deezer (alternative à OAuth quand les inscriptions d'app sont fermées). "
+            "Récupérable depuis deezer.com → DevTools → Application → Cookies → arl."
+        ),
     )
 
     # ── Proactivité ───────────────────────────────────────────
@@ -484,6 +513,56 @@ class Settings(BaseSettings):
         default="",
         description="Nom donné à L'assistant (ASSISTANT_NAME dans .env).",
     )
+
+    def anthropic_credential(self) -> str:
+        """Clé x-api-key ou token Bearer, le premier non vide."""
+        key = self.anthropic_api_key.get_secret_value().strip()
+        token = self.anthropic_auth_token.get_secret_value().strip()
+        return key or token
+
+    def has_anthropic_credentials(self) -> bool:
+        cred = self.anthropic_credential()
+        return bool(cred) and "..." not in cred and len(cred) >= 20
+
+    def anthropic_sdk_kwargs(self) -> dict[str, str]:
+        """Kwargs pour `anthropic.AsyncAnthropic` (proxy Claude Code inclus)."""
+        kwargs: dict[str, str] = {}
+        api_key = self.anthropic_api_key.get_secret_value().strip()
+        auth_token = self.anthropic_auth_token.get_secret_value().strip()
+        base_url = self.anthropic_base_url.strip().rstrip("/")
+        if api_key:
+            kwargs["api_key"] = api_key
+        if auth_token:
+            kwargs["auth_token"] = auth_token
+            kwargs.setdefault("api_key", auth_token)
+        if not kwargs.get("api_key") and not kwargs.get("auth_token"):
+            kwargs["api_key"] = ""
+        if base_url:
+            kwargs["base_url"] = base_url
+        return kwargs
+
+    def anthropic_http_headers(self) -> dict[str, str]:
+        """Headers HTTP pour /v1/models (preflight, doctor, test-key)."""
+        headers = {"anthropic-version": "2023-06-01"}
+        api_key = self.anthropic_api_key.get_secret_value().strip()
+        auth_token = self.anthropic_auth_token.get_secret_value().strip()
+        if api_key:
+            headers["x-api-key"] = api_key
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+            headers.setdefault("x-api-key", auth_token)
+        return headers
+
+    def anthropic_models_url(self) -> str:
+        base = self.anthropic_base_url.strip().rstrip("/") or "https://api.anthropic.com"
+        return f"{base}/v1/models"
+
+    def openai_sdk_kwargs(self) -> dict[str, str]:
+        kwargs: dict[str, str] = {"api_key": self.openai_api_key.get_secret_value()}
+        base_url = self.openai_base_url.strip().rstrip("/")
+        if base_url:
+            kwargs["base_url"] = base_url
+        return kwargs
 
     @property
     def display_name(self) -> str:

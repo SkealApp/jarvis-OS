@@ -39,11 +39,8 @@ async def jarvis_doctor() -> dict:
     async with httpx.AsyncClient(timeout=5) as c:
         try:
             r = await c.get(
-                "https://api.anthropic.com/v1/models",
-                headers={
-                    "x-api-key": os.getenv("ANTHROPIC_API_KEY", ""),
-                    "anthropic-version": "2023-06-01",
-                },
+                settings.anthropic_models_url(),
+                headers=settings.anthropic_http_headers(),
             )
             checks["anthropic"] = {
                 "status": "ok" if r.status_code == 200 else "error",

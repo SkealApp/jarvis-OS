@@ -15,6 +15,7 @@ $env:PYTHONIOENCODING = "utf-8"
 
 . (Join-Path $PSScriptRoot "scripts\onedrive_guard.ps1")
 . (Join-Path $PSScriptRoot "scripts\download_bundle.ps1")
+. (Join-Path $PSScriptRoot "scripts\ensure_livekit.ps1")
 
 function Test-DevVenvPresent {
     return Test-Path (Join-Path $PSScriptRoot ".venv\Scripts\python.exe")
@@ -52,8 +53,10 @@ function Invoke-JarvisPython {
 }
 
 function Get-LivekitCommand {
-    $bundled = Join-Path $PSScriptRoot "bundle\bin\livekit-server.exe"
-    if (Test-Path $bundled) { return $bundled }
+    # Auto-provision (equivalent de scripts/ensure_livekit.sh) : bundle, puis
+    # bin\ du projet, puis PATH, sinon telechargement de la release officielle.
+    $resolved = Ensure-LivekitServer -ProjectRoot $PSScriptRoot
+    if ($resolved) { return $resolved }
     return "livekit-server"
 }
 
@@ -390,10 +393,11 @@ switch ($Command.ToLowerInvariant()) {
         } catch {
             Write-Host "  FastAPI  eteint (port $port)" -ForegroundColor Yellow
         }
-        if (Get-Command livekit-server -ErrorAction SilentlyContinue) {
-            Write-Host "  LiveKit  binaire installe" -ForegroundColor Green
+        $lkBinary = Get-JarvisLivekitBinary -ProjectRoot $PSScriptRoot
+        if ($lkBinary) {
+            Write-Host "  LiveKit  binaire installe ($lkBinary)" -ForegroundColor Green
         } else {
-            Write-Host "  LiveKit  binaire absent" -ForegroundColor Yellow
+            Write-Host "  LiveKit  binaire absent ('.\jarvis.ps1 run' l'installe auto)" -ForegroundColor Yellow
             Write-Host "  https://github.com/livekit/livekit/releases" -ForegroundColor DarkGray
         }
         if (Get-Command uv -ErrorAction SilentlyContinue) {

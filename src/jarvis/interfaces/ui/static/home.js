@@ -644,6 +644,88 @@
   });
 
 
+  // ── Deezer mini player flottant ────────────────────────────────────
+  let _deezerEl = null;
+
+  function _deezerPlayer(embedUrl, label) {
+    if (!_deezerEl) {
+      _deezerEl = document.createElement("div");
+      _deezerEl.id = "deezer-float";
+      _deezerEl.style.cssText = [
+        "position:fixed", "bottom:24px", "right:24px", "z-index:9999",
+        "width:320px", "border-radius:12px", "overflow:hidden",
+        "box-shadow:0 8px 32px rgba(0,0,0,.6)",
+        "background:#0e0e12", "border:1px solid rgba(255,255,255,.08)",
+        "display:flex", "flex-direction:column"
+      ].join(";");
+
+      // Barre de titre avec label + bouton fermer
+      const bar = document.createElement("div");
+      bar.style.cssText = [
+        "display:flex", "align-items:center", "justify-content:space-between",
+        "padding:8px 12px", "background:rgba(255,255,255,.04)",
+        "font-family:system-ui", "font-size:12px", "color:#b0b0c0",
+        "cursor:move", "user-select:none"
+      ].join(";");
+
+      const titleEl = document.createElement("span");
+      titleEl.id = "deezer-float-title";
+      titleEl.textContent = "🎵 Deezer";
+
+      const closeBtn = document.createElement("button");
+      closeBtn.textContent = "✕";
+      closeBtn.style.cssText = [
+        "background:none", "border:none", "color:#b0b0c0", "cursor:pointer",
+        "font-size:14px", "padding:0 4px", "line-height:1"
+      ].join(";");
+      closeBtn.onclick = _deezerPlayerClose;
+
+      bar.appendChild(titleEl);
+      bar.appendChild(closeBtn);
+
+      const iframe = document.createElement("iframe");
+      iframe.id = "deezer-float-iframe";
+      iframe.style.cssText = "width:100%;height:152px;border:none;display:block";
+      iframe.allow = "autoplay; encrypted-media";
+
+      _deezerEl.appendChild(bar);
+      _deezerEl.appendChild(iframe);
+      document.body.appendChild(_deezerEl);
+
+      // Drag pour déplacer le player
+      let dragX = 0, dragY = 0, dragging = false;
+      bar.addEventListener("mousedown", (e) => {
+        dragging = true;
+        dragX = e.clientX - _deezerEl.getBoundingClientRect().left;
+        dragY = e.clientY - _deezerEl.getBoundingClientRect().top;
+      });
+      document.addEventListener("mousemove", (e) => {
+        if (!dragging) return;
+        _deezerEl.style.left = (e.clientX - dragX) + "px";
+        _deezerEl.style.top  = (e.clientY - dragY) + "px";
+        _deezerEl.style.right = "auto";
+        _deezerEl.style.bottom = "auto";
+      });
+      document.addEventListener("mouseup", () => { dragging = false; });
+    }
+
+    // Mettre à jour l'iframe et le label
+    const iframe = document.getElementById("deezer-float-iframe");
+    const titleEl = document.getElementById("deezer-float-title");
+    if (iframe) iframe.src = embedUrl + "?autoplay=1&tracklist=1&loop=1";
+    if (titleEl) titleEl.textContent = "🎵 " + (label || "Deezer");
+    _deezerEl.style.display = "flex";
+  }
+
+  function _deezerPlayerClose() {
+    if (_deezerEl) {
+      const iframe = document.getElementById("deezer-float-iframe");
+      if (iframe) iframe.src = "";   // stoppe la lecture
+      _deezerEl.style.display = "none";
+    }
+  }
+
+
   // ── WebSocket — sync état orbe + canal passif ──────────────────────
   function connectWS() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -686,6 +768,20 @@
       if (data.type === "map_zoom_in")   J.views.dispatch("globe", "zoom_in", {});
       if (data.type === "map_globe_view"){ J.views.activate("globe"); J.views.dispatch("globe", "globe_view", {}); }
       if (data.type === "toggle_panels") J.views.dispatch("globe", "toggle_panels", {});
+
+      // Ouverture d'URL dans un onglet nommé du même navigateur (fallback)
+      if (data.type === "open_url" && data.url) {
+        const tabName = data.tab_name || "_blank";
+        window.open(data.url, tabName);
+      }
+
+      // ── Deezer mini player flottant ─────────────────────────────────────
+      if (data.type === "deezer_player" && data.embed_url) {
+        _deezerPlayer(data.embed_url, data.label || "");
+      }
+      if (data.type === "deezer_player_close") {
+        _deezerPlayerClose();
+      }
     };
 
     _ws.onclose = () => setTimeout(connectWS, 3000);

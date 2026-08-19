@@ -17,6 +17,7 @@ _ENV_PATH = Path(".env")
 
 _SENSITIVE_KEYS = {
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
     "ELEVENLABS_API_KEY",
     "ELEVENLABS_VOICE_ID",
     "OPENAI_API_KEY",
@@ -59,7 +60,15 @@ _RESTART_KEYS = {
 }
 
 # Ces clés déclenchent un hot-swap du provider LLM sans redémarrage.
-_LLM_HOT_SWAP_KEYS = {"LLM_PROVIDER", "API_BACKEND", "OLLAMA_MODEL", "OLLAMA_BASE_URL"}
+_LLM_HOT_SWAP_KEYS = {
+    "LLM_PROVIDER",
+    "API_BACKEND",
+    "OLLAMA_MODEL",
+    "OLLAMA_BASE_URL",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "OPENAI_BASE_URL",
+}
 
 _SETTINGS_FIELD_MAP: dict[str, str] = {
     "TTS_PROVIDER": "tts_provider",
@@ -71,6 +80,8 @@ _SETTINGS_FIELD_MAP: dict[str, str] = {
     "WHISPER_MODEL": "whisper_model",
     "LLM_PROVIDER": "llm_provider",
     "ANTHROPIC_MODEL": "anthropic_model",
+    "ANTHROPIC_BASE_URL": "anthropic_base_url",
+    "ANTHROPIC_AUTH_TOKEN": "anthropic_auth_token",
     "VOICE_ANTHROPIC_MODEL": "voice_anthropic_model",
     "VISION_MODEL": "vision_model",
     "DOCKER_ENABLED": "docker_enabled",
@@ -101,6 +112,7 @@ _SETTINGS_FIELD_MAP: dict[str, str] = {
     "API_BACKEND": "api_backend",
     "OLLAMA_MODEL": "ollama_model",
     "OLLAMA_BASE_URL": "ollama_base_url",
+    "OPENAI_BASE_URL": "openai_base_url",
     "HOME_ASSISTANT_URL": "home_assistant_url",
     "HOME_ASSISTANT_TOKEN": "home_assistant_token",
 }

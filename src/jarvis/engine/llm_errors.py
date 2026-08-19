@@ -50,6 +50,8 @@ def llm_config_error(cfg: Settings | None = None) -> str | None:
     }.get(backend, "API_KEY")
     if key_field is None:
         return None
+    if backend == "anthropic" and cfg.has_anthropic_credentials():
+        return None
     key = getattr(cfg, key_field).get_secret_value().strip()
     if not key or "..." in key or len(key) < 20:
         name = cfg.display_name
@@ -69,7 +71,8 @@ def friendly_llm_error(exc: BaseException, cfg: Settings | None = None) -> str:
     if isinstance(exc, anthropic.AuthenticationError):
         return (
             f"Désolé {name}, Anthropic refuse ma clé API. "
-            "Vérifie ANTHROPIC_API_KEY dans .env."
+            "Vérifie ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN "
+            "(et ANTHROPIC_BASE_URL si tu utilises un proxy) dans .env."
         )
     if isinstance(exc, anthropic.RateLimitError):
         return f"Désolé {name}, Anthropic limite le débit. Réessaie dans quelques secondes."

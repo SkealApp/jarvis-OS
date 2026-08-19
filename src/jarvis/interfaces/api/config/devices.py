@@ -208,7 +208,9 @@ async def get_connectors() -> list:
         {
             "name": "Anthropic (Claude)",
             "sub": "LLM principal",
-            "status": "on" if _env_ok("ANTHROPIC_API_KEY") else "off",
+            "status": "on"
+            if _env_ok("ANTHROPIC_API_KEY") or _env_ok("ANTHROPIC_AUTH_TOKEN")
+            else "off",
         },
         {
             "name": "ElevenLabs",

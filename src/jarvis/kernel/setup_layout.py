@@ -66,4 +66,9 @@ def is_setup_complete(env_path: Path | None = None) -> bool:
         "anthropic": "ANTHROPIC_API_KEY",
     }
     backend = env.get("API_BACKEND", "anthropic")
-    return bool(env.get(key_for_backend.get(backend, "ANTHROPIC_API_KEY"), "").strip())
+    key_name = key_for_backend.get(backend, "ANTHROPIC_API_KEY")
+    if env.get(key_name, "").strip():
+        return True
+    if backend == "anthropic" and env.get("ANTHROPIC_AUTH_TOKEN", "").strip():
+        return True
+    return False

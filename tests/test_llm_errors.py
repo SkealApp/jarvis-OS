@@ -18,19 +18,37 @@ def test_llm_config_error_missing_anthropic_key() -> None:
         user_firstname="Test",
         api_backend="anthropic",
         anthropic_api_key=SecretStr(""),
+        anthropic_auth_token=SecretStr(""),
     )
     msg = llm_config_error(cfg)
     assert msg is not None
     assert "ANTHROPIC_API_KEY" in msg
 
 
-def test_llm_config_error_ok_when_key_present() -> None:
+def test_llm_config_error_ok_when_auth_token_present() -> None:
     cfg = Settings(
         user_firstname="Test",
         api_backend="anthropic",
-        anthropic_api_key=SecretStr("sk-ant-api03-" + "x" * 40),
+        anthropic_api_key=SecretStr(""),
+        anthropic_auth_token=SecretStr("sk-proxy-" + "x" * 40),
+        anthropic_base_url="https://api.synterolink.com",
     )
     assert llm_config_error(cfg) is None
+
+
+def test_anthropic_sdk_kwargs_uses_auth_token_and_base_url() -> None:
+    cfg = Settings(
+        anthropic_api_key=SecretStr(""),
+        anthropic_auth_token=SecretStr("sk-proxy-token-1234567890abcdef"),
+        anthropic_base_url="https://api.synterolink.com/",
+    )
+    kwargs = cfg.anthropic_sdk_kwargs()
+    assert kwargs["auth_token"] == "sk-proxy-token-1234567890abcdef"
+    assert kwargs["api_key"] == "sk-proxy-token-1234567890abcdef"
+    assert kwargs["base_url"] == "https://api.synterolink.com"
+    headers = cfg.anthropic_http_headers()
+    assert headers["Authorization"] == "Bearer sk-proxy-token-1234567890abcdef"
+    assert cfg.anthropic_models_url() == "https://api.synterolink.com/v1/models"
 
 
 def _fake_response(status_code: int) -> SimpleNamespace:

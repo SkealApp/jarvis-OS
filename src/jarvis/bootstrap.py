@@ -53,6 +53,7 @@ from jarvis.capabilities.tools.preset import ExecutePresetTool
 from jarvis.capabilities.tools.registry import ToolRegistry
 from jarvis.capabilities.tools.show_view import ShowViewTool
 from jarvis.capabilities.tools.skills import SkillCreateTool, SkillImproveTool, SkillListTool
+from jarvis.capabilities.tools.deezer import DeezerTool
 from jarvis.capabilities.tools.spotify import SpotifyTool
 from jarvis.capabilities.tools.subagent import ScriptRPCTool, SpawnSubagentTool
 from jarvis.capabilities.tools.vision import VisionTool
@@ -308,7 +309,7 @@ def build(
         MemoryTopicWriteTool(vector_index=vector_index),
         MemoryLoadTopicTool(topic_store=topic_store),
         MemorySearchTool(vector_index=vector_index),
-        SpotifyTool(),
+        *([] if settings.music_provider == "deezer" else [SpotifyTool()]),  # Deezer enregistré après proactive_queue
         GmailListTool(credentials_path=_google_creds, token_path=_gmail_token),
         ExecutePresetTool(tool_registry=tool_registry, tts_engine=tts_engine),
         CrossSessionRecallTool(fts_index=fts_index, vector_index=vector_index),
@@ -320,8 +321,10 @@ def build(
     notifications = NotificationQueue()
     proactive_queue = ProactiveQueue()
 
-    # ShowViewTool dépend de proactive_queue, donc enregistré après.
+    # ShowViewTool et DeezerTool dépendent de proactive_queue, donc enregistrés après.
     tool_registry.register(ShowViewTool(broadcast_event=proactive_queue.broadcast_event))
+    if settings.music_provider == "deezer":
+        tool_registry.register(DeezerTool(broadcast_event=proactive_queue.broadcast_event))
 
     budget = BudgetGuard(
         settings=settings,

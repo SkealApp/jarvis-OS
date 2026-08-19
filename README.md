@@ -147,7 +147,7 @@ L'assistant web configure l'identité, les clés API, les modules optionnels et 
 | Commande | Rôle |
 |---|---|
 | `.\jarvis.ps1 setup` | Assistant de configuration (`:8765`) — téléchargement bundle intégré |
-| `.\jarvis.ps1 run` | LiveKit + API + pipeline vocal |
+| `.\jarvis.ps1 run` | LiveKit + API + pipeline vocal (télécharge `livekit-server.exe` automatiquement s'il manque) |
 | `.\jarvis.ps1 api` | Serveur FastAPI seul |
 | `.\jarvis.ps1 doctor` | Diagnostic rapide |
 
@@ -231,8 +231,8 @@ Tout est configuré via l'assistant web (`.\jarvis.ps1 setup` ou `./jarvis eclos
 
 | `API_BACKEND` | Clé requise | Notes |
 |---|---|---|
-| `anthropic` | `ANTHROPIC_API_KEY` | Le vocal in-house utilise `VOICE_ANTHROPIC_MODEL`. |
-| `openai` | `OPENAI_API_KEY` | `ANTHROPIC_API_KEY` peut rester à sa valeur d'exemple. Function calling supporté. |
+| `anthropic` | `ANTHROPIC_API_KEY` **ou** `ANTHROPIC_AUTH_TOKEN` | Le vocal in-house utilise `VOICE_ANTHROPIC_MODEL`. Proxy Claude Code : `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`. |
+| `openai` | `OPENAI_API_KEY` | `ANTHROPIC_API_KEY` peut rester à sa valeur d'exemple. Function calling supporté. Proxy : `OPENAI_BASE_URL`. |
 | `mistral` | `MISTRAL_API_KEY` | Function calling supporté. |
 | `local` (`LLM_PROVIDER=local`) | aucune | Ollama local. |
 

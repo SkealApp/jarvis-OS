@@ -114,6 +114,34 @@ def test_anthropic_provider_passes_str(secret_sentinels: dict[str, str]) -> None
     )
 
 
+def test_anthropic_provider_passes_base_url(secret_sentinels: dict[str, str]) -> None:
+    from jarvis.providers.llm import api as mod
+
+    captured: dict[str, Any] = {}
+
+    class Spy:
+        def __init__(self, **kw: Any) -> None:
+            captured.update(kw)
+
+    monkey_url = "https://api.example-proxy.test"
+    from jarvis.kernel.settings import settings as live
+
+    object.__setattr__(live, "anthropic_base_url", monkey_url)
+    object.__setattr__(live, "anthropic_auth_token", SecretStr("SENTINEL_auth_token_xxDDD"))
+    try:
+        with patch.object(mod.anthropic, "AsyncAnthropic", Spy):
+            mod.AnthropicProvider()
+    finally:
+        object.__setattr__(live, "anthropic_base_url", "")
+        object.__setattr__(live, "anthropic_auth_token", SecretStr(""))
+
+    assert captured["base_url"] == monkey_url
+    assert captured["auth_token"] == "SENTINEL_auth_token_xxDDD"
+    _assert_str_and_eq(
+        captured["api_key"], secret_sentinels["anthropic_api_key"], "AnthropicProvider+base_url"
+    )
+
+
 # ── 2. MistralProvider — providers/llm/api.py:344 ───────────────────────────
 
 

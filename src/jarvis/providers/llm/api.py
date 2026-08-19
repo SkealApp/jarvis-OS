@@ -153,9 +153,7 @@ class AnthropicProvider(LLMProvider):
         model: str | None = None,
         tracker: UsageTracker | None = None,
     ) -> None:
-        self._client = anthropic.AsyncAnthropic(
-            api_key=settings.anthropic_api_key.get_secret_value()
-        )
+        self._client = anthropic.AsyncAnthropic(**settings.anthropic_sdk_kwargs())
         self._model = model or settings.anthropic_model
         self._max_tokens = max_tokens
         self._tracker = tracker
@@ -926,7 +924,7 @@ class OpenAIProvider(LLMProvider):
         model: str | None = None,
         tracker: UsageTracker | None = None,
     ) -> None:
-        self._client = AsyncOpenAI(api_key=settings.openai_api_key.get_secret_value())
+        self._client = AsyncOpenAI(**settings.openai_sdk_kwargs())
         self._model = model or settings.openai_model
         self._tracker = tracker
 

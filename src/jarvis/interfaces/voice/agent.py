@@ -283,6 +283,15 @@ def _build_voice_tools() -> list:
         for t in jarvis_tools
     ]
 
+    # Les tools à broadcast UI (show_view, deezer_control…) sont câblés par
+    # bootstrap sur la ProactiveQueue LOCALE de CE process voix — queue sans
+    # aucun navigateur abonné (les WebSockets vivent dans le process API).
+    # On les recâble sur _voice_broadcast : HTTP POST → /internal/broadcast
+    # de l'API, qui rebroadcaste aux navigateurs connectés.
+    for t in jarvis_tools:
+        if hasattr(t, "_broadcast"):
+            t._broadcast = _voice_broadcast
+
     tools = [_make_livekit_tool(t) for t in jarvis_tools]
     logger.info("Voice tools chargés: %s", [t._info.name for t in tools])
     return tools
@@ -330,13 +339,36 @@ def prewarm(proc: object) -> None:
 
 
 def _build_voice_stt(env: dict) -> object:
-    """STT du pipeline LiveKit, sélectionné via STT_PROVIDER (cloud).
+    """STT du pipeline LiveKit, sélectionné via STT_PROVIDER.
 
-    'deepgram' (défaut, meilleure latence) | 'openai' (Whisper) | 'google'
-    (Cloud Speech, nécessite un service account GOOGLE_APPLICATION_CREDENTIALS).
+    'deepgram' (défaut, meilleure latence, cloud) |
+    'openai'   (Whisper cloud via API) |
+    'whisper'  (faster-whisper local, 100 % offline, CPU, ~1-4s latence) |
+    'google'   (Cloud Speech, service account GOOGLE_APPLICATION_CREDENTIALS).
+
     Repli sur Deepgram en cas d'erreur de construction (auth manquante, etc.).
     """
+    from livekit.agents.stt import StreamAdapter
+
     provider = env.get("STT_PROVIDER", "deepgram").strip().lower()
+
+    if provider == "whisper":
+        try:
+            from jarvis.providers.audio.whisper_stt import WhisperSTT
+
+            model_size = env.get("WHISPER_MODEL", "tiny").strip() or "tiny"
+            whisper = WhisperSTT(model=model_size, language="fr")
+            # StreamAdapter convertit le STT batch en pipeline streaming temps réel
+            logger.info("STT pipeline = Whisper local (%s, CPU, offline)", model_size)
+            return StreamAdapter(stt=whisper, vad=silero.VAD.load())
+        except Exception as exc:
+            collector.error("JRV-VOI-001", "JRV-VOI-001", cause=exc)
+            logger.error(
+                "WhisperSTT indisponible (%s) — repli Deepgram. "
+                "Vérifie que faster-whisper est installé (uv sync).",
+                exc,
+            )
+
     try:
         if provider == "openai":
             stt = lk_openai.STT(
@@ -394,15 +426,23 @@ def _build_voice_elevenlabs(env: dict) -> object:
 def _build_voice_tts(env: dict) -> object:
     """TTS du pipeline LiveKit, sélectionné via TTS_PROVIDER.
 
+    'edge'       → Microsoft Edge TTS local, gratuit, sans clé API (défaut de repli).
     'gemini'     → voix Google naturelle, MAIS le free tier est très limité
                    (10 req/min) → enveloppé dans un FallbackAdapter vers
                    ElevenLabs : dès que Gemini renvoie 429 (quota), LiveKit
                    bascule sur ElevenLabs sans couper la conversation.
-    'elevenlabs' → ElevenLabs seul (défaut).
-    'piper'      → pas de plugin LiveKit temps réel → repli ElevenLabs.
+    'elevenlabs' → ElevenLabs seul.
+    'piper'      → pas de plugin LiveKit temps réel → repli EdgeTTS.
     """
-    provider = env.get("TTS_PROVIDER", "elevenlabs").strip().lower()
+    from jarvis.providers.audio.edge_tts_lk import EdgeTTS
+
+    provider = env.get("TTS_PROVIDER", "edge").strip().lower()
     has_eleven = bool(env.get("ELEVENLABS_API_KEY", os.getenv("ELEVENLABS_API_KEY", "")))
+
+    if provider == "edge" or provider == "piper":
+        voice = env.get("EDGE_TTS_VOICE", "fr-FR-DeniseNeural")
+        logger.info("TTS pipeline = EdgeTTS (voix: %s)", voice)
+        return EdgeTTS(voice=voice)
 
     if provider == "gemini":
         gemini = gemini_tts.TTS(
@@ -423,8 +463,15 @@ def _build_voice_tts(env: dict) -> object:
         )
         return gemini
 
-    logger.info("TTS pipeline = ElevenLabs")
-    return _build_voice_elevenlabs(env)
+    if has_eleven:
+        logger.info("TTS pipeline = ElevenLabs")
+        return _build_voice_elevenlabs(env)
+
+    # Repli automatique sur EdgeTTS si aucune clé cloud disponible
+    logger.warning(
+        "TTS pipeline = EdgeTTS (repli — ELEVENLABS_API_KEY absente, provider='%s')", provider
+    )
+    return EdgeTTS(voice=env.get("EDGE_TTS_VOICE", "fr-FR-DeniseNeural"))
 
 
 def _build_voice_llm(env: dict) -> object:
@@ -446,7 +493,14 @@ def _build_voice_llm(env: dict) -> object:
         if backend == "openai":
             model = env.get("VOICE_LLM_MODEL") or env.get("OPENAI_MODEL") or "gpt-4o-mini"
             logger.info("Voice LLM — OpenAI %s", model)
-            return lk_openai.LLM(model=model, temperature=0.7)
+            openai_kwargs: dict = {"model": model, "temperature": 0.7}
+            openai_key = env.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", "")).strip()
+            openai_base = (env.get("OPENAI_BASE_URL") or "").strip().rstrip("/")
+            if openai_key:
+                openai_kwargs["api_key"] = openai_key
+            if openai_base:
+                openai_kwargs["base_url"] = openai_base
+            return lk_openai.LLM(**openai_kwargs)
 
         if backend == "mistral":
             model = env.get("VOICE_LLM_MODEL") or env.get("MISTRAL_MODEL") or "mistral-large-latest"
@@ -466,7 +520,25 @@ def _build_voice_llm(env: dict) -> object:
                 or "claude-haiku-4-5-20251001"
             )
             logger.info("Voice LLM — Anthropic %s", model)
-            return lk_anthropic.LLM(model=model, temperature=0.7)
+            import anthropic as anthropic_sdk
+
+            api_key = (env.get("ANTHROPIC_API_KEY") or "").strip()
+            auth_token = (env.get("ANTHROPIC_AUTH_TOKEN") or "").strip()
+            base_url = (env.get("ANTHROPIC_BASE_URL") or "").strip().rstrip("/")
+            client_kwargs: dict[str, str] = {}
+            if api_key:
+                client_kwargs["api_key"] = api_key
+            if auth_token:
+                client_kwargs["auth_token"] = auth_token
+                client_kwargs.setdefault("api_key", auth_token)
+            if base_url:
+                client_kwargs["base_url"] = base_url
+            voice_kwargs: dict = {"model": model, "temperature": 0.7}
+            if client_kwargs:
+                voice_kwargs["client"] = anthropic_sdk.AsyncAnthropic(**client_kwargs)
+            elif base_url:
+                voice_kwargs["base_url"] = base_url
+            return lk_anthropic.LLM(**voice_kwargs)
     except ImportError as exc:
         collector.error("JRV-VOI-001", "JRV-VOI-001", cause=exc)
         logger.warning(

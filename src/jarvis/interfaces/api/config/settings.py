@@ -96,9 +96,11 @@ async def get_settings_endpoint() -> dict:
             "api_backend": _ev("API_BACKEND", "api_backend"),
             "anthropic_model": _ev("ANTHROPIC_MODEL", "anthropic_model"),
             "voice_anthropic_model": _ev("VOICE_ANTHROPIC_MODEL", "voice_anthropic_model"),
+            "anthropic_base_url": _ev("ANTHROPIC_BASE_URL", "anthropic_base_url"),
             "vision_model": _ev("VISION_MODEL", "vision_model"),
             "ollama_model": _ev("OLLAMA_MODEL", "ollama_model"),
             "ollama_base_url": _ev("OLLAMA_BASE_URL", "ollama_base_url"),
+            "openai_base_url": _ev("OPENAI_BASE_URL", "openai_base_url"),
         },
         "api_keys": api_keys_masked,
         "docker": {
@@ -281,10 +283,12 @@ async def test_api_key(body: TestKeyBody) -> dict:
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
             if provider == "anthropic":
-                r = await client.get(
-                    "https://api.anthropic.com/v1/models",
-                    headers={"x-api-key": body.key, "anthropic-version": "2023-06-01"},
-                )
+                headers = {
+                    "x-api-key": body.key,
+                    "anthropic-version": "2023-06-01",
+                    "Authorization": f"Bearer {body.key}",
+                }
+                r = await client.get(_s.anthropic_models_url(), headers=headers)
                 return {"ok": r.status_code == 200}
             if provider == "elevenlabs":
                 r = await client.get(
@@ -293,8 +297,15 @@ async def test_api_key(body: TestKeyBody) -> dict:
                 )
                 return {"ok": r.status_code == 200}
             if provider == "openai":
+                base = _s.openai_base_url.strip().rstrip("/")
+                if base.endswith("/v1"):
+                    url = f"{base}/models"
+                elif base:
+                    url = f"{base}/v1/models"
+                else:
+                    url = "https://api.openai.com/v1/models"
                 r = await client.get(
-                    "https://api.openai.com/v1/models",
+                    url,
                     headers={"Authorization": f"Bearer {body.key}"},
                 )
                 return {"ok": r.status_code == 200}

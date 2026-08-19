@@ -145,6 +145,10 @@ FIX : copie « .env.example » en « .env » et remplis au minimum la clé de to
     }.get(backend)
     if key_name:
         val = env.get(key_name, "")
+        if backend == "anthropic" and (not val or "..." in val or len(val) < 20):
+            val = env.get("ANTHROPIC_AUTH_TOKEN", "")
+            if val and "..." not in val and len(val) >= 20:
+                key_name = "ANTHROPIC_AUTH_TOKEN"
         if not val or "..." in val or len(val) < 20:
             _warn(
                 "JRV-KRN-007",
@@ -152,10 +156,11 @@ FIX : copie « .env.example » en « .env » et remplis au minimum la clé de to
                 f"""
 API_BACKEND={backend} mais {key_name} est vide ou encore à sa valeur d'exemple.
 FIX : mets ta vraie clé {key_name} dans .env (la clé brute, sans guillemets).
+Un proxy Claude Code accepte aussi ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL.
 """,
             )
         else:
-            _check_llm_key_live(backend, key_name, val)
+            _check_llm_key_live(backend, key_name, val, env)
     return True
 
 
@@ -169,12 +174,31 @@ _LLM_MODELS = {
 }
 
 
-def _check_llm_key_live(backend: str, key_name: str, key: str) -> None:
+def _check_llm_key_live(
+    backend: str, key_name: str, key: str, env: dict[str, str] | None = None
+) -> None:
+    env = env or {}
     entry = _LLM_MODELS.get(backend)
     if entry is None:
         return
     url, headers_tmpl = entry
     headers = {k: v.replace("{key}", key) for k, v in headers_tmpl.items()}
+    if backend == "anthropic":
+        base = (env.get("ANTHROPIC_BASE_URL") or "").strip().rstrip("/")
+        if base:
+            # Les proxies Anthropic-compatibles (Syntero, LiteLLM, OpenRouter…)
+            # n'exposent pas /v1/models. On saute la vérification réseau : la clé
+            # sera validée au premier vrai appel LLM.
+            return
+        token = (env.get("ANTHROPIC_AUTH_TOKEN") or "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+            headers.setdefault("x-api-key", token)
+    elif backend == "openai":
+        base = (env.get("OPENAI_BASE_URL") or "").strip().rstrip("/")
+        if base:
+            # Même logique proxy : skip la vérification réseau.
+            return
     try:
         urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=6)
     except urllib.error.HTTPError as e:
