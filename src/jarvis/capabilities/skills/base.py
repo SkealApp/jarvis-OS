@@ -74,6 +74,8 @@ class PresetStep:
         self.title = data.get("title", "")
         self.body = data.get("body", "")
         self.requires_confirmation = data.get("requires_confirmation", False)
+        self.process = data.get("process", "")
+        self.windows_paths = data.get("windows_paths") or []
 
     def get_command(self) -> str | None:
         """

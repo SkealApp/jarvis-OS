@@ -51,7 +51,7 @@ from jarvis.capabilities.skills.synthesizer import (
 from jarvis.engine.mission.docker_executor import DockerExecutor
 from jarvis.kernel.contracts import MemoryStore as MemoryKernel
 from jarvis.kernel.error_collector import collector  # jrv: autofix
-from jarvis.kernel.paths import PROJECT_ROOT
+from jarvis.kernel.paths import PROJECT_ROOT, UI_STATIC_DIR
 from jarvis.kernel.settings import settings
 
 # Plafond du nombre d'events skill_candidate_proposal traités par scan.
@@ -226,6 +226,7 @@ class SkillLab:
         *,
         candidates_dir: Path = SKILLS_CANDIDATES_DIR,
         installed_dir: Path = SKILLS_INSTALLED_DIR,
+        ui_skills_dir: Path | None = None,
         registry_reload: callable | None = None,
     ) -> None:
         self._kernel = kernel
@@ -233,6 +234,8 @@ class SkillLab:
         self._synthesizer = synthesizer
         self._candidates_dir = Path(candidates_dir)
         self._installed_dir = Path(installed_dir)
+        # Dossier frontend où les view.js des vues promues sont copiés.
+        self._ui_skills_dir = Path(ui_skills_dir) if ui_skills_dir else UI_STATIC_DIR / "skills"
         # Callable optionnel pour recharger le SkillRegistry après promotion.
         # Injecté par main.py via skill_registry.reload.
         self._registry_reload = registry_reload
@@ -379,6 +382,71 @@ class SkillLab:
 
         # 3) Test sandbox — le gate critique.
         return await self.test_in_sandbox(skill_name)
+
+    # ── Créations structurées : presets (routines) et vues ───────────────────
+
+    async def propose_preset(
+        self,
+        *,
+        name: str,
+        description: str,
+        triggers: list[str],
+        steps: list[dict],
+        label: str = "",
+    ) -> SkillRecord | None:
+        """Pipeline preset : validation structurelle → candidate → sandbox.
+
+        Même gate que les skills conversationnels : la routine n'est PAS
+        active tant que l'humain ne l'a pas promue. Lève ValueError si le
+        spec est invalide (nom, triggers, steps, blocklist shell).
+        """
+        self._refuse_if_installed(name)
+        skill_name = self._synthesizer.propose_preset_candidate(
+            name=name,
+            description=description,
+            triggers=triggers,
+            steps=steps,
+            label=label,
+            target_dir=self._candidates_dir,
+        )
+        self._lifecycle.create_candidate(name=skill_name)
+        return await self.test_in_sandbox(skill_name)
+
+    async def propose_view(
+        self,
+        *,
+        name: str,
+        description: str,
+        view_js: str,
+        label: str = "",
+        view_css: str = "",
+        capabilities: list[str] | None = None,
+    ) -> SkillRecord | None:
+        """Pipeline vue : validation JS → candidate → sandbox.
+
+        Le view.js reste en zone candidate ; il n'est copié vers
+        static/skills/{name}/ qu'à la promotion humaine (le code frontend
+        généré ne tourne JAMAIS dans le navigateur avant validation).
+        """
+        self._refuse_if_installed(name)
+        skill_name = self._synthesizer.propose_view_candidate(
+            name=name,
+            description=description,
+            view_js=view_js,
+            label=label,
+            view_css=view_css,
+            capabilities=capabilities,
+            target_dir=self._candidates_dir,
+        )
+        self._lifecycle.create_candidate(name=skill_name)
+        return await self.test_in_sandbox(skill_name)
+
+    def _refuse_if_installed(self, name: str) -> None:
+        if name and (self._installed_dir / name).exists():
+            raise ValueError(
+                f"'{name}' existe déjà dans installed/ — choisis un autre nom "
+                "ou utilise skill_improve."
+            )
 
     @staticmethod
     def _event_to_trajectory(event_payload: dict) -> dict:
@@ -554,8 +622,10 @@ class SkillLab:
         script_path.write_text(direct_script, encoding="utf-8")
 
         try:
+            # sys.executable plutôt que "python" : sur Windows, "python" peut
+            # résoudre vers le stub Microsoft Store (rc 9009, sortie non-JSON).
             proc = await asyncio.create_subprocess_exec(
-                "python",
+                sys.executable,
                 str(script_path),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -651,6 +721,11 @@ class SkillLab:
         # Nettoie le fichier test résiduel s'il existe
         (installed_dir / "_skill_sandbox_test.py").unlink(missing_ok=True)
 
+        # Vue : copie view.js/view.css vers le dossier statique du frontend.
+        # C'est ICI (et seulement ici) que du code frontend généré devient
+        # chargeable par le navigateur — après validation humaine.
+        self._publish_view_assets(skill_name, installed_dir)
+
         promoted = self._lifecycle.promote(skill_name)
 
         if self._registry_reload is not None:
@@ -662,6 +737,33 @@ class SkillLab:
 
         logger.info("Skill promue et installée", name=skill_name)
         return promoted
+
+    def _publish_view_assets(self, skill_name: str, installed_dir: Path) -> None:
+        """Si la skill promue est une vue, copie view.js/view.css vers static/skills/."""
+        yaml_path = installed_dir / "skill.yaml"
+        if not yaml_path.exists():
+            return
+        try:
+            import yaml as _yaml
+
+            meta = _yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        except Exception as exc:  # noqa: BLE001
+            collector.error("JRV-SKL-001", "JRV-SKL-001", cause=exc)
+            return
+        if meta.get("type") != "view":
+            return
+
+        view_js = installed_dir / "view.js"
+        if not view_js.exists():
+            logger.warning("SkillLab: vue promue sans view.js", name=skill_name)
+            return
+        target_dir = self._ui_skills_dir / skill_name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(view_js, target_dir / "view.js")
+        view_css = installed_dir / "view.css"
+        if view_css.exists():
+            shutil.copy2(view_css, target_dir / "view.css")
+        logger.info("SkillLab: assets vue publiés", name=skill_name, target=str(target_dir))
 
     def reject(
         self,

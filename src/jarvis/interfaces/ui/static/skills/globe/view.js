@@ -12,10 +12,11 @@
   const MAPBOX_STYLE = 'mapbox://styles/barth-95/cmosuocjv007801seho3g8r4y';
 
   let map = null;
-  let rotationTimer = null;
   let container = null;
   let toastTimer = null;
   let autoRotateOn = false;
+  let interacting = false;
+  let resumeTimer = null;
   let mapReady = false;      // true une fois map.on('load') passé
   let pendingCmds = [];      // commandes reçues avant que la carte soit prête
 
@@ -46,10 +47,15 @@
   }
 
   async function fetchToken() {
-    const res = await fetch('/api/globe/config');
-    if (!res.ok) throw new Error('globe config unavailable');
+    const headers = (window.Jarvis && Jarvis.authHeaders) ? Jarvis.authHeaders() : {};
+    const res = await fetch('/api/globe/config', { headers });
+    if (!res.ok) throw new Error('globe config unavailable (' + res.status + ')');
     const data = await res.json();
-    return data.mapbox_token || data.token;
+    const token = (data.mapbox_token || data.token || '').trim();
+    if (!token) {
+      throw new Error('MAPBOX_TOKEN vide — enregistre .env (Ctrl+S) puis redémarre Jarvis.');
+    }
+    return token;
   }
 
   function showToast(msg) {
@@ -84,18 +90,33 @@
   }
 
   function startAutoRotation() {
-    stopAutoRotation();
     autoRotateOn = true;
-    rotationTimer = setInterval(() => {
-      if (!map) return;
-      map.setBearing((map.getBearing() + 0.1) % 360);
-    }, 16);
+    if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
+    spinGlobe();
   }
 
   function stopAutoRotation() {
-    clearInterval(rotationTimer);
-    rotationTimer = null;
     autoRotateOn = false;
+    if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
+    map?.stop();
+  }
+
+  function scheduleResume() {
+    if (resumeTimer) clearTimeout(resumeTimer);
+    resumeTimer = setTimeout(() => {
+      interacting = false;
+      autoRotateOn = true;
+      spinGlobe();
+    }, 4000);
+  }
+
+  // Spin officiel Mapbox : 1 easeTo / seconde au lieu d'un setBearing à 60 fps.
+  function spinGlobe() {
+    if (!map || !autoRotateOn || interacting || document.hidden) return;
+    if (map.getZoom() >= 4) return;
+    const center = map.getCenter();
+    center.lng -= 1.2;
+    map.easeTo({ center, duration: 1000, easing: (n) => n });
   }
 
   function ensureContainer() {
@@ -237,13 +258,30 @@
         mapEl.style.cssText = 'width:100%;height:100%;';
         container.appendChild(mapEl);
 
+        // Plus de workers / plus de tuiles en parallèle = chargement plus fluide
+        // sans toucher à la qualité du rendu (PC haut de gamme).
+        const cores = navigator.hardwareConcurrency || 8;
+        if (typeof mapboxgl.workerCount === 'number') {
+          mapboxgl.workerCount = Math.min(8, Math.max(4, Math.floor(cores / 2)));
+        }
+        if (typeof mapboxgl.maxParallelImageRequests === 'number') {
+          mapboxgl.maxParallelImageRequests = 32;
+        }
+
         map = new mapboxgl.Map({
           container: mapEl,
           style: MAPBOX_STYLE,
           projection: 'globe',
           center: [10, 20],
           zoom: 1.5,
+          pitch: 0,
+          bearing: 0,
           fadeDuration: 0,
+          antialias: true,
+          attributionControl: false,
+          pixelRatio: window.devicePixelRatio || 1,
+          maxTileCacheSize: 120,
+          failIfMajorPerformanceCaveat: false,
         });
 
         map.on('load', () => {
@@ -254,7 +292,6 @@
             'space-color': 'rgb(4, 4, 14)',
             'star-intensity': 0.8,
           });
-          startAutoRotation();
 
           // Carte prête : vider la file des commandes reçues pendant le chargement
           // (ex. « montre Paris » au tout premier affichage à froid).
@@ -264,11 +301,23 @@
           queued.forEach(({ cmd, params }) => runCommand(cmd, params));
         });
 
-        // Stop rotation while user interacts
-        map.on('mousedown', stopAutoRotation);
-        map.on('touchstart', stopAutoRotation);
-        map.on('mouseup', startAutoRotation);
-        map.on('touchend', startAutoRotation);
+        // Rotation seulement une fois les tuiles calmes — évite le lag au load.
+        map.once('idle', startAutoRotation);
+        map.on('moveend', spinGlobe);
+
+        const pauseSpin = () => {
+          interacting = true;
+          stopAutoRotation();
+        };
+        map.on('mousedown', pauseSpin);
+        map.on('touchstart', pauseSpin);
+        map.on('wheel', () => { interacting = true; map.stop(); autoRotateOn = false; scheduleResume(); });
+        map.on('mouseup', () => { interacting = false; scheduleResume(); });
+        map.on('touchend', () => { interacting = false; scheduleResume(); });
+        document.addEventListener('visibilitychange', () => {
+          if (document.hidden) map?.stop();
+          else if (autoRotateOn) spinGlobe();
+        });
 
       } catch (err) {
         container.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--fg-1,#e8e8e8);font-family:monospace;font-size:13px;">${err.message}</div>`;

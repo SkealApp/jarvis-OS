@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shlex
+import sys
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -61,11 +63,19 @@ CLI_WHITELIST: frozenset[str] = frozenset(
         "say",
         "screencapture",
         "afinfo",
+        # Windows — lancement d'apps (start est un builtin cmd, normalisé vers cmd)
+        "cmd",
+        "cmd.exe",
+        "start",
         # Énergie / système (approbation requise)
         "pmset",
         "shutdown",
     }
 )
+
+_CLI_WHITELIST_LC: frozenset[str] = frozenset(b.lower() for b in CLI_WHITELIST)
+_CREATE_NO_WINDOW = 0x08000000
+_SHELL_META_RE = re.compile(r"[&|<>^\n%]")
 
 # ── Interpréteurs : binaires qui exécutent du code passé en argument ─────────
 # Ces binaires déclenchent TOUJOURS _requires_approval, même whitelistés.
@@ -96,7 +106,11 @@ _EXEC_BLOCKED_RE = re.compile(
     r"|>\s*/dev/(sda|hda|nvme|loop|disk)\d*"
     r"|\|\s*(bash|sh|zsh|fish|dash)\b"
     r"|curl\b[^|]*\|\s*sudo"
-    r"|wget\b[^|]*-O\s*-[^|]*\|\s*(bash|sh)",
+    r"|wget\b[^|]*-O\s*-[^|]*\|\s*(bash|sh)"
+    r"|\bdel\s+/[a-z]*s"
+    r"|\berase\s+/[a-z]*s"
+    r"|\b(rd|rmdir)\s+/s"
+    r"|\bformat\s+[a-z]:",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -122,8 +136,155 @@ _BLOCKED_PATTERNS: list[str] = [
     r"curl\b[^|]*\|\s*sudo",
     r"wget\b[^|]*-O\s*-[^|]*\|\s*(bash|sh)",
     r"\bsudo\b",  # sudo bloqué par défaut
+    r"\bdel\s+/[a-z]*s",
+    r"\berase\s+/[a-z]*s",
+    r"\b(rd|rmdir)\s+/s",
+    r"\bformat\s+[a-z]:",
 ]
 _BLOCKED_RE = re.compile("|".join(_BLOCKED_PATTERNS), re.IGNORECASE | re.DOTALL)
+
+# Alias public — utilisé par le SkillSynthesizer pour valider les steps `cli`
+# des presets créés par le LLM (les presets exécutent du shell brut).
+BLOCKED_SHELL_RE = _BLOCKED_RE
+
+
+def _find_real_windows_python() -> str | None:
+    """Trouve le vrai python.exe de l'utilisateur sur le PATH.
+
+    Ignorés :
+      • le stub Microsoft Store (`WindowsApps\\python.exe`) qui affiche
+        « Python was not found » et sort en rc 9009 ;
+      • le venv de Jarvis et son python de base (uv), dépourvus de pip.
+    Sans ce filtre, `python -m pip install …` et `start python script.py`
+    échouaient silencieusement.
+    """
+    skip_prefixes = {
+        p.lower()
+        for p in (
+            os.environ.get("VIRTUAL_ENV", ""),
+            sys.prefix,
+            sys.exec_prefix,
+            sys.base_prefix,
+        )
+        if p
+    }
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        low = entry.lower()
+        if not entry or "windowsapps" in low:
+            continue
+        if any(low.startswith(pref) for pref in skip_prefixes):
+            continue
+        cand = Path(entry) / "python.exe"
+        try:
+            if cand.is_file():
+                return str(cand)
+        except OSError:
+            continue
+    return None
+
+
+_real_python_cache: str | None = None
+_real_python_resolved = False
+
+
+def _real_windows_python() -> str | None:
+    global _real_python_cache, _real_python_resolved
+    if not _real_python_resolved:
+        _real_python_cache = _find_real_windows_python()
+        _real_python_resolved = True
+    return _real_python_cache
+
+
+def _resolve_python_tokens(parts: list[str]) -> list[str]:
+    """Remplace python/python3/pip par le vrai interpréteur Windows.
+
+    S'applique au binaire principal et aux tokens `python` d'une commande
+    `cmd /c start …` sûre (lancement de script en arrière-plan).
+    """
+    real = _real_windows_python()
+    if not real:
+        return parts
+    binary = Path(parts[0]).name.lower()
+    if binary in {"python", "python3"}:
+        return [real, *parts[1:]]
+    if binary in {"pip", "pip3"}:
+        return [real, "-m", "pip", *parts[1:]]
+    if binary in {"cmd", "cmd.exe"} and is_safe_windows_start(parts):
+        return [
+            parts[0],
+            *(real if p.lower() in {"python", "python3"} else p for p in parts[1:]),
+        ]
+    return parts
+
+
+def normalize_cli_parts(parts: list[str]) -> list[str]:
+    """Normalise les alias Windows : `start Chrome` → `cmd /c start "" Chrome`.
+
+    `start` est un builtin de cmd.exe, pas un binaire. On le réécrit avant
+    la whitelist pour que subprocess_exec puisse réellement lancer l'app.
+    Résout aussi python/pip vers le vrai interpréteur (stub Store ignoré).
+    """
+    if not parts:
+        return parts
+    binary = Path(parts[0]).name.lower()
+    if binary == "start":
+        parts = ["cmd", "/c", "start", "", *parts[1:]]
+    elif binary in {"cmd", "cmd.exe"}:
+        parts = ["cmd", *parts[1:]]
+    if sys.platform == "win32":
+        parts = _resolve_python_tokens(parts)
+    return parts
+
+
+def is_safe_windows_start(parts: list[str]) -> bool:
+    """True si la commande est uniquement `cmd /c start [""] [/flag…] <app>`.
+
+    Refuse les blobs `cmd /c "start x & del …"` (un seul argument /c avec
+    métacaractères shell) et les URL. C'est le seul usage de `cmd` qui
+    ne demande pas de confirmation humaine.
+    """
+    if len(parts) < 4:
+        return False
+    if Path(parts[0]).name.lower() not in {"cmd", "cmd.exe"}:
+        return False
+    if parts[1].lower() != "/c":
+        return False
+    rest = parts[2:]
+    if not rest or rest[0].lower() != "start":
+        return False
+    if any(_SHELL_META_RE.search(token) for token in rest):
+        return False
+    i = 1
+    if i < len(rest) and rest[i] in ("", '""'):
+        i += 1
+    while i < len(rest) and rest[i].startswith("/"):
+        i += 1
+    if i >= len(rest):
+        return False
+    target = rest[i]
+    if target.lower().startswith(("http://", "https://", "file:", "ms-")):
+        return False
+    return True
+
+
+def _windows_sandbox_env(tmp_dir: str, *, launch_app: bool) -> dict[str, str]:
+    """Env Windows : on conserve le PATH / profil utilisateur.
+
+    Un PATH réduit à System32 casse python/pip (WinError 2 / rc 9009) et
+    un USERPROFILE pointant sur le tmpdir jette les `pip install` à la poubelle
+    à chaque appel. Le sandbox se limite au cwd temporaire.
+    """
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    env = dict(os.environ)
+    env["SYSTEMROOT"] = system_root
+    env["WINDIR"] = system_root
+    env["COMSPEC"] = str(Path(system_root) / "System32" / "cmd.exe")
+    env["TEMP"] = tmp_dir
+    env["TMP"] = tmp_dir
+    env["HOME"] = tmp_dir  # isolation ; USERPROFILE réel conservé pour pip/python
+    env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    env.setdefault("LANG", "fr_FR.UTF-8")
+    return env
 
 
 class _PendingApproval:
@@ -360,10 +521,15 @@ class ExecuteCLITool(Tool):
     name = "execute_cli"
     description = (
         "Exécute une commande shell complète. Le premier binaire doit être dans la whitelist. "
-        "Pour les commandes sensibles (shutdown, rm, pmset, sudo) ou les interpréteurs "
-        "(osascript) : appelle d'abord sans confirmed, présente la commande à l'utilisateur, "
-        "puis rappelle avec confirmed=true après son accord explicite. "
-        "Exemples sans approbation : yt-dlp, ffmpeg, rembg, pdftk, sips, screencapture."
+        "Pour les commandes sensibles (shutdown, rm, pmset, sudo, cmd générique) ou les "
+        "interpréteurs (osascript) : appelle d'abord sans confirmed, présente la commande "
+        "à l'utilisateur, puis rappelle avec confirmed=true après son accord explicite.\n"
+        "Windows — lancer une app (sans confirmation) : "
+        "`start Chrome`, `start Discord`, `start Cursor`.\n"
+        "Windows — INTERDIT : cat, heredoc `<< EOF`, /tmp, python3, `&&` (execute_cli "
+        "n'est pas un shell bash). Pour créer un fichier : outil write_file. "
+        "Pour lancer un script Python long (boucle) : `start python C:\\\\Users\\\\...\\\\script.py`.\n"
+        "Exemples sans approbation : yt-dlp, ffmpeg, python script.py, start <App>."
     )
     input_schema = {
         "type": "object",
@@ -401,6 +567,11 @@ class ExecuteCLITool(Tool):
         if binary in _INTERPRETERS_REQUIRE_APPROVAL:
             return True
 
+        # cmd Windows : seul `cmd /c start <app>` est libre. Le reste (cmd /c echo,
+        # powershell via cmd, blobs quotés) exige une confirmation.
+        if binary in {"cmd", "cmd.exe"}:
+            return not is_safe_windows_start(parts)
+
         # open : approbation si lancement d'app (-a) ou URL externe
         if binary == "open":
             rest = parts[1:]
@@ -421,17 +592,24 @@ class ExecuteCLITool(Tool):
             "stdout": asyncio.subprocess.PIPE,
             "stderr": asyncio.subprocess.STDOUT,
         }
+        if sys.platform == "win32":
+            extra_kwargs["creationflags"] = _CREATE_NO_WINDOW
+
+        launch_app = is_safe_windows_start(parts)
 
         if sandboxed:
             tmp_dir = tempfile.mkdtemp(prefix="jarvis_exec_")
             extra_kwargs["cwd"] = tmp_dir
-            extra_kwargs["env"] = {
-                "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-                "HOME": tmp_dir,
-                "TMPDIR": tmp_dir,
-                "LANG": "fr_FR.UTF-8",
-                "LC_ALL": "fr_FR.UTF-8",
-            }
+            if sys.platform == "win32":
+                extra_kwargs["env"] = _windows_sandbox_env(tmp_dir, launch_app=launch_app)
+            else:
+                extra_kwargs["env"] = {
+                    "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                    "HOME": tmp_dir,
+                    "TMPDIR": tmp_dir,
+                    "LANG": "fr_FR.UTF-8",
+                    "LC_ALL": "fr_FR.UTF-8",
+                }
             logger.info(f"ExecuteCLI sandboxed cwd={tmp_dir}: {cmd_str[:60]}")
         else:
             logger.info(f"ExecuteCLI unsandboxed (allow_unsandboxed_exec=true): {cmd_str[:60]}")
@@ -480,9 +658,13 @@ class ExecuteCLITool(Tool):
         if not parts:
             return ToolResult(content="Commande vide.", is_error=True)
 
-        # Couche 3 : allowlist — binaire résolu (robuste aux chemins absolus)
+        parts = normalize_cli_parts(parts)
+
+        # Couche 3 : allowlist — binaire résolu (robuste aux chemins absolus / casse
+        # et à l'extension .exe ajoutée par la résolution python)
         binary = Path(parts[0]).name
-        if binary not in CLI_WHITELIST:
+        binary_lc = binary.lower()
+        if binary_lc not in _CLI_WHITELIST_LC and Path(binary_lc).stem not in _CLI_WHITELIST_LC:
             return ToolResult(
                 content=(
                     f"Binaire '{binary}' non autorisé."

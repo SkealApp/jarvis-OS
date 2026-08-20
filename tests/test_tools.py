@@ -9,6 +9,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import sys
+
 import pytest
 
 # ── Fixture : active la permission fichiers pour ce module ────────────────────
@@ -16,17 +18,16 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _enable_files_permission() -> Generator[None, None, None]:
-    """Active files=True avant chaque test, restaure False après.
+    """Active files=True avant chaque test, restaure la valeur précédente.
 
-    Les outils filesystem refusent si files=False (défaut sécurité).
-    Les tests qui vérifient un REFUS de PATH doivent passer avec files=True
-    pour obtenir le bon message d'erreur (chemin hors racine, pas permissions).
+    Les outils filesystem refusent si files=False.
     """
     from jarvis.kernel.permissions import permissions
 
+    previous = permissions.get("files")
     permissions.set("files", True)
     yield
-    permissions.set("files", False)
+    permissions.set("files", previous)
 
 
 # ── ToolResult / base ─────────────────────────────────────────
@@ -252,6 +253,7 @@ async def test_find_files_access_denied(tmp_path: Path) -> None:
 # ── CLIRunnerTool ─────────────────────────────────────────────
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="echo est un builtin cmd, pas un binaire")
 async def test_cli_runner_success(tmp_path: Path) -> None:
     from jarvis.capabilities.tools.cli import CLIRunnerTool
 
@@ -284,6 +286,7 @@ async def test_cli_runner_no_whitelist(tmp_path: Path) -> None:
     assert result.is_error
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="echo est un builtin cmd, pas un binaire")
 async def test_cli_runner_with_args(tmp_path: Path) -> None:
     from jarvis.capabilities.tools.cli import CLIRunnerTool
 

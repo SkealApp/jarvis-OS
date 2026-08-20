@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import platform
+from pathlib import Path
 
 from loguru import logger
 
@@ -21,7 +23,7 @@ from jarvis.kernel.settings import settings
 class PresetExecutor:
     """
     Exécute un preset step par step.
-    Types supportés : cli, spotify, tts, ai, wait, notify
+    Types supportés : cli, open_app, spotify, tts, ai, wait, notify
     """
 
     def __init__(
@@ -130,6 +132,7 @@ class PresetExecutor:
 
         handlers = {
             "cli": self._exec_cli,
+            "open_app": self._exec_open_app,
             "spotify": self._exec_spotify,
             "tts": self._exec_tts,
             "ai": self._exec_ai,
@@ -168,6 +171,29 @@ class PresetExecutor:
             return {"status": "done", "message": stdout.decode()[:200]}
         return {"status": "failed", "message": stderr.decode()[:200]}
 
+    async def _exec_open_app(self, step: PresetStep) -> dict:
+        """Ouvre une application seulement si elle n'est pas déjà lancée."""
+        target = step.get_command()
+        if target is None:
+            system = platform.system().lower()
+            return {"status": "skipped", "message": f"Non supporté sur {system}"}
+
+        process = step.process or Path(target).stem
+        if await _is_process_running(process):
+            return {"status": "skipped", "message": f"{process} déjà ouvert"}
+
+        system = platform.system().lower()
+        if system == "windows":
+            launched = await _start_windows_app(target, list(step.windows_paths))
+        elif system == "darwin":
+            launched = await _run_shell(target)
+        else:
+            launched = await _run_shell(target)
+
+        if launched:
+            return {"status": "done", "message": f"{process} lancé"}
+        return {"status": "failed", "message": f"Impossible de lancer {process}"}
+
     async def _exec_spotify(self, step: PresetStep) -> dict:
         if not self._tools:
             return {"status": "skipped", "message": "ToolRegistry non disponible"}
@@ -192,11 +218,12 @@ class PresetExecutor:
         return {"status": "done", "message": f"TTS : {step.text[:50]}"}
 
     async def _exec_ai(self, step: PresetStep) -> dict:
-        if not self._llm or not step.prompt:
+        prompt = (step.prompt or "").replace("{user}", settings.display_name)
+        if not self._llm or not prompt:
             return {"status": "skipped", "message": "LLM non disponible ou prompt vide"}
 
         response = await self._llm.complete(
-            messages=[{"role": "user", "content": step.prompt}],
+            messages=[{"role": "user", "content": prompt}],
             max_tokens=150,
             system=(
                 f"Tu es {settings.display_assistant_name}. "
@@ -242,3 +269,79 @@ class PresetExecutor:
         )
         await asyncio.wait_for(proc.communicate(), timeout=10)
         return {"status": "done", "message": f"Notification : {step.title}"}
+
+
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def _win_kwargs() -> dict:
+    if platform.system().lower() == "windows":
+        return {"creationflags": _CREATE_NO_WINDOW}
+    return {}
+
+
+async def _is_process_running(name: str) -> bool:
+    """True si un process correspondant à `name` tourne déjà."""
+    image = name.strip()
+    if not image:
+        return False
+    system = platform.system().lower()
+    if system == "windows":
+        exe = image if image.lower().endswith(".exe") else f"{image}.exe"
+        proc = await asyncio.create_subprocess_exec(
+            "tasklist",
+            "/FI",
+            f"IMAGENAME eq {exe}",
+            "/NH",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            **_win_kwargs(),
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=8)
+        text = out.decode(errors="replace").lower()
+        return exe.lower() in text and "info:" not in text
+
+    proc = await asyncio.create_subprocess_exec(
+        "pgrep",
+        "-ifl",
+        image,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await asyncio.wait_for(proc.communicate(), timeout=8)
+    return proc.returncode == 0 and bool(out.strip())
+
+
+async def _run_shell(cmd: str) -> bool:
+    proc = await asyncio.create_subprocess_shell(
+        cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    await asyncio.wait_for(proc.communicate(), timeout=20)
+    return proc.returncode == 0
+
+
+async def _start_windows_app(target: str, extra_paths: list[str]) -> bool:
+    """Lance une app Windows via un exe existant, sinon `cmd /c start`."""
+    candidates: list[str] = []
+    for raw in extra_paths:
+        expanded = os.path.expandvars(raw)
+        if os.path.isfile(expanded):
+            candidates.append(expanded)
+    if os.path.isfile(os.path.expandvars(target)):
+        candidates.append(os.path.expandvars(target))
+
+    launch_target = candidates[0] if candidates else target
+    proc = await asyncio.create_subprocess_exec(
+        "cmd",
+        "/c",
+        "start",
+        "",
+        launch_target,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        **_win_kwargs(),
+    )
+    await asyncio.wait_for(proc.communicate(), timeout=15)
+    return proc.returncode == 0

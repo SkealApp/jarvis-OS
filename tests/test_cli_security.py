@@ -11,7 +11,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from jarvis.capabilities.tools.cli import ExecuteCLITool
+from jarvis.capabilities.tools import cli as cli_mod
+from jarvis.capabilities.tools.cli import (
+    ExecuteCLITool,
+    is_safe_windows_start,
+    normalize_cli_parts,
+)
 
 
 @pytest.fixture()
@@ -315,3 +320,166 @@ async def test_legitimate_git_log(tool: ExecuteCLITool, monkeypatch: pytest.Monk
 
 async def test_legitimate_convert(tool: ExecuteCLITool, monkeypatch: pytest.MonkeyPatch) -> None:
     await _run_legit(tool, monkeypatch, "convert input.png output.jpg")
+
+
+# ── Windows : cmd / start ─────────────────────────────────────────────────────
+
+
+def test_normalize_start_chrome() -> None:
+    assert normalize_cli_parts(["start", "Chrome"]) == ["cmd", "/c", "start", "", "Chrome"]
+
+
+def test_normalize_cmd_exe_to_cmd() -> None:
+    assert normalize_cli_parts([r"C:\Windows\System32\cmd.exe", "/c", "start", "Discord"]) == [
+        "cmd",
+        "/c",
+        "start",
+        "Discord",
+    ]
+
+
+def test_safe_start_chrome() -> None:
+    assert is_safe_windows_start(["cmd", "/c", "start", "", "Chrome"]) is True
+    assert is_safe_windows_start(["cmd", "/c", "start", "Discord"]) is True
+
+
+def test_unsafe_cmd_echo_requires_approval() -> None:
+    assert ExecuteCLITool._requires_approval(["cmd", "/c", "echo", "hi"]) is True
+
+
+def test_unsafe_cmd_quoted_blob() -> None:
+    """cmd /c \"start x & del\" n'est PAS un start argv-séparé → approbation."""
+    parts = ["cmd", "/c", "start chrome & del /f file"]
+    assert is_safe_windows_start(parts) is False
+    assert ExecuteCLITool._requires_approval(parts) is True
+
+
+def test_start_url_requires_approval() -> None:
+    assert is_safe_windows_start(["cmd", "/c", "start", "https://evil.com"]) is False
+    assert ExecuteCLITool._requires_approval(["cmd", "/c", "start", "https://evil.com"]) is True
+
+
+async def test_start_chrome_no_approval(
+    tool: ExecuteCLITool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_settings = MagicMock()
+    mock_settings.allow_unsandboxed_exec = False
+    monkeypatch.setattr("jarvis.capabilities.tools.cli.settings", mock_settings)
+
+    captured: dict = {}
+
+    async def mock_exec(*args: object, **kwargs: object) -> MagicMock:
+        captured["args"] = args
+        captured.update(kwargs)
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.returncode = 0
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=mock_exec):
+        result = await tool.execute(command="start Chrome")
+
+    assert not result.is_error
+    assert "⚠️" not in result.content
+    assert captured["args"][:4] == ("cmd", "/c", "start", "")
+    assert captured["args"][4] == "Chrome"
+
+
+async def test_cmd_generic_awaits_approval(tool: ExecuteCLITool) -> None:
+    result = await tool.execute(command="cmd /c echo hello")
+    assert not result.is_error
+    assert "⚠️" in result.content
+
+
+async def test_cmd_del_s_blocked_even_confirmed(tool: ExecuteCLITool) -> None:
+    result = await tool.execute(command="cmd /c del /s C:\\temp", confirmed=True)
+    assert result.is_error
+    assert "dangereux" in result.content.lower() or "refusé" in result.content.lower()
+
+
+# ── Windows : résolution python (stub Microsoft Store) ────────────────────────
+
+_FAKE_PYTHON = r"C:\RealPython\python.exe"
+
+
+def test_resolve_python_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli_mod, "_real_windows_python", lambda: _FAKE_PYTHON)
+    assert cli_mod._resolve_python_tokens(["python", "script.py"]) == [_FAKE_PYTHON, "script.py"]
+    assert cli_mod._resolve_python_tokens(["python3", "-V"]) == [_FAKE_PYTHON, "-V"]
+
+
+def test_resolve_pip_to_python_m_pip(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli_mod, "_real_windows_python", lambda: _FAKE_PYTHON)
+    assert cli_mod._resolve_python_tokens(["pip", "install", "pyautogui"]) == [
+        _FAKE_PYTHON,
+        "-m",
+        "pip",
+        "install",
+        "pyautogui",
+    ]
+
+
+def test_resolve_python_inside_safe_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli_mod, "_real_windows_python", lambda: _FAKE_PYTHON)
+    parts = ["cmd", "/c", "start", "", "python", "C:\\x\\s.py"]
+    assert cli_mod._resolve_python_tokens(parts) == [
+        "cmd",
+        "/c",
+        "start",
+        "",
+        _FAKE_PYTHON,
+        "C:\\x\\s.py",
+    ]
+
+
+def test_resolve_python_noop_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli_mod, "_real_windows_python", lambda: None)
+    assert cli_mod._resolve_python_tokens(["python", "script.py"]) == ["python", "script.py"]
+
+
+def test_resolve_untouched_for_other_binaries(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli_mod, "_real_windows_python", lambda: _FAKE_PYTHON)
+    assert cli_mod._resolve_python_tokens(["git", "status"]) == ["git", "status"]
+
+
+def test_find_real_python_skips_windowsapps_stub(
+    tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pathlib import Path as _P
+
+    stub_dir = _P(str(tmp_path)) / "Microsoft" / "WindowsApps"
+    real_dir = _P(str(tmp_path)) / "RealPython"
+    stub_dir.mkdir(parents=True)
+    real_dir.mkdir(parents=True)
+    (stub_dir / "python.exe").write_bytes(b"stub")
+    (real_dir / "python.exe").write_bytes(b"real")
+
+    monkeypatch.setenv("PATH", os.pathsep.join([str(stub_dir), str(real_dir)]))
+    assert cli_mod._find_real_windows_python() == str(real_dir / "python.exe")
+
+
+async def test_execute_resolved_python_passes_whitelist(
+    tool: ExecuteCLITool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`python x.py` résolu en chemin complet doit rester whitelisté (stem check)."""
+    monkeypatch.setattr(cli_mod, "_real_windows_python", lambda: _FAKE_PYTHON)
+    monkeypatch.setattr(cli_mod.sys, "platform", "win32")
+
+    captured: dict = {}
+
+    async def mock_exec(*args: object, **kwargs: object) -> MagicMock:
+        captured["args"] = args
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.returncode = 0
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=mock_exec):
+        result = await tool.execute(command="python C:\\x\\script.py")
+
+    assert not result.is_error
+    assert "non autorisé" not in result.content
+    assert captured["args"][0] == _FAKE_PYTHON

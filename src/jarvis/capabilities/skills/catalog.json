@@ -92,16 +92,16 @@
     },
     {
       "name": "mode-travail",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "type": "preset",
       "author": "BarthH95",
-      "description": "Lance l'environnement de travail : apps, musique focus, Ne pas déranger.",
+      "description": "Lance l'environnement de travail : Cursor, GitHub Desktop, Vivaldi, Chrome (si pas déjà ouverts), musique focus, Ne pas déranger.",
       "tags": ["preset", "travail", "focus", "productivite"],
       "path": "skills/mode-travail",
       "requires_env": [],
-      "requires_tools": ["spotify_control", "execute_cli", "notion_tasks"],
+      "requires_tools": ["spotify_control", "execute_cli"],
       "requires_oauth": [],
-      "requires_apps": ["Notion", "Visual Studio Code"],
+      "requires_apps": ["Cursor", "GitHub Desktop", "Vivaldi", "Google Chrome"],
       "platforms": ["mac", "windows"],
       "triggers": ["lance le mode travail", "mode focus", "on bosse", "je commence à travailler", "démarre la session de travail"]
     }

@@ -11,6 +11,7 @@ import shutil
 from pathlib import Path
 
 import httpx
+import yaml
 from loguru import logger
 
 from jarvis.capabilities.skills.registry import SKILLS_INSTALLED_DIR, skill_registry
@@ -241,20 +242,45 @@ class SkillInstaller:
             }
             (skill_dir / "skill.yaml").write_text(yaml.dump(yaml_meta, allow_unicode=True))
 
-    def uninstall(self, skill_name: str) -> dict:
-        """Désinstalle un skill."""
-        skill_dir = SKILLS_INSTALLED_DIR / skill_name
+    def _resolve_installed_dir(self, skill_name: str) -> Path | None:
+        """Trouve le dossier installé par nom de dossier OU par champ yaml `name`.
 
-        if not skill_dir.exists():
+        Certaines vues ont un identifiant yaml différent du dossier
+        (`globe-view` vs `globe`). Les créations IA utilisent le même nom.
+        """
+        direct = SKILLS_INSTALLED_DIR / skill_name
+        if direct.exists():
+            return direct
+        if not SKILLS_INSTALLED_DIR.exists():
+            return None
+        for folder in SKILLS_INSTALLED_DIR.iterdir():
+            yaml_path = folder / "skill.yaml"
+            if not yaml_path.is_file():
+                continue
+            try:
+                meta = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+            except Exception:
+                continue
+            if meta.get("name") == skill_name:
+                return folder
+        return None
+
+    def uninstall(self, skill_name: str) -> dict:
+        """Désinstalle un skill, une routine ou une vue (dossier + assets frontend)."""
+        skill_dir = self._resolve_installed_dir(skill_name)
+
+        if skill_dir is None:
             return {"success": False, "message": f"Skill '{skill_name}' n'est pas installé"}
 
         try:
+            folder_name = skill_dir.name
             shutil.rmtree(skill_dir)
-            # Supprimer les fichiers statiques s'il y en a
-            static_dst = UI_STATIC_DIR / "skills" / skill_name
-            if static_dst.exists():
-                shutil.rmtree(static_dst)
-                logger.debug(f"Fichiers statiques supprimés pour {skill_name}")
+            # Assets frontend : nom yaml ET nom de dossier (peuvent différer)
+            for static_name in {skill_name, folder_name}:
+                static_dst = UI_STATIC_DIR / "skills" / static_name
+                if static_dst.exists():
+                    shutil.rmtree(static_dst)
+                    logger.debug(f"Fichiers statiques supprimés pour {static_name}")
             skill_registry.reload()
             logger.info(f"Skill désinstallé : {skill_name}")
             return {"success": True, "message": f"Skill '{skill_name}' désinstallé"}

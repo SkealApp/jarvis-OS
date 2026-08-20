@@ -138,6 +138,30 @@
     return btn;
   }
 
+  function makeUninstallBtn(item, onDone) {
+    const uninstBtn = el("button", {
+      class: "panel-save-btn",
+      text: "Désinstaller",
+      style: { background: "rgba(255,80,80,0.08)", borderColor: "rgba(255,80,80,0.25)", color: "rgba(255,120,120,0.85)" },
+    });
+    uninstBtn.addEventListener("click", async () => {
+      const display = item.label || item.name;
+      if (!confirm("Supprimer « " + display + " » ? Cette action est définitive.")) return;
+      const slug = item.folder || item.name;
+      uninstBtn.textContent = "…"; uninstBtn.disabled = true;
+      try {
+        await J.api.delete("/api/skills/uninstall/" + encodeURIComponent(slug));
+        J.notify({ kind: "success", text: display + " désinstallé" });
+        closePanel();
+        if (onDone) onDone();
+      } catch (err) {
+        J.notify({ kind: "error", text: err.message });
+        uninstBtn.textContent = "Désinstaller"; uninstBtn.disabled = false;
+      }
+    });
+    return uninstBtn;
+  }
+
   function appendConfigSection(panel, displayName, cfg) {
     if (!cfg.fields || !cfg.fields.length) return;
     const sec = el("div", { class: "panel-section" });
@@ -202,6 +226,10 @@
     body.appendChild(stSec);
 
     appendConfigSection(body, s.name, cfg);
+
+    const actSec = el("div", { class: "panel-section" });
+    actSec.appendChild(makeUninstallBtn(s, renderSkills));
+    body.appendChild(actSec);
     panel.appendChild(body);
   }
 
@@ -256,24 +284,7 @@
 
     // Désinstaller
     const actSec = el("div", { class: "panel-section" });
-    const uninstBtn = el("button", {
-      class: "panel-save-btn",
-      text: "Désinstaller",
-      style: { background: "rgba(255,80,80,0.08)", borderColor: "rgba(255,80,80,0.25)", color: "rgba(255,120,120,0.85)" },
-    });
-    uninstBtn.addEventListener("click", async () => {
-      uninstBtn.textContent = "…"; uninstBtn.disabled = true;
-      try {
-        await J.api.delete("/api/skills/uninstall/" + v.name);
-        J.notify({ kind: "success", text: (v.label || v.name) + " désinstallé" });
-        closePanel();
-        renderVues();
-      } catch (err) {
-        J.notify({ kind: "error", text: err.message });
-        uninstBtn.textContent = "Désinstaller"; uninstBtn.disabled = false;
-      }
-    });
-    actSec.appendChild(uninstBtn);
+    actSec.appendChild(makeUninstallBtn(v, renderVues));
     body.appendChild(actSec);
     panel.appendChild(body);
   }
@@ -334,6 +345,10 @@
     body.appendChild(runSec);
 
     appendConfigSection(body, p.label || p.name, cfg);
+
+    const actSec = el("div", { class: "panel-section" });
+    actSec.appendChild(makeUninstallBtn(p, renderRoutines));
+    body.appendChild(actSec);
     panel.appendChild(body);
   }
 
@@ -657,7 +672,11 @@
       } catch (_) {}
     }
 
-    skills = skills.filter(s => !SKILL_AS_ROUTINE.has(s.name));
+    skills = skills.filter(s => {
+      const t = s.type || "conversational";
+      if (t === "view" || t === "preset") return false;
+      return !SKILL_AS_ROUTINE.has(s.name);
+    });
 
     const grid = el("div", { class: "skills-grid" });
     skills.forEach(s => {

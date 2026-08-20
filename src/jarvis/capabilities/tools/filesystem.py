@@ -66,9 +66,8 @@ class ReadFileTool(Tool):
 
     name = "read_file"
     description = (
-        "Lit le contenu d'un fichier texte sur le Mac de l'utilisateur (lecture seule, aucune "
-        "modification). Utilise cet outil quand l'utilisateur demande de lire ou analyser "
-        "un fichier."
+        "Lit le contenu d'un fichier texte sur la machine de l'utilisateur. "
+        "Pour CRÉER ou modifier un fichier, utilise write_file — tu PEUX écrire des fichiers."
     )
     input_schema = {
         "type": "object",
@@ -195,3 +194,94 @@ class FindFilesTool(Tool):
         if not results:
             return ToolResult(content=f"Aucun fichier trouvé pour '{pattern}'.")
         return ToolResult(content="\n".join(results))
+
+
+_WRITE_BLOCKED_NAMES = {
+    ".env",
+    ".env.local",
+    "google_credentials.json",
+    "google_token.json",
+    "google_gmail_token.json",
+    "spotify_token.json",
+    "deezer_token.json",
+    "strava_token.json",
+}
+_MAX_WRITE_SIZE = 200_000
+
+
+class WriteFileTool(Tool):
+    """Écrit un fichier texte dans les répertoires autorisés (file_search_roots)."""
+
+    name = "write_file"
+    description = (
+        "Crée ou écrase un fichier texte sur la machine de l'utilisateur. "
+        "Utilise CET outil pour écrire un script (.py, .ps1, .js…) — "
+        "ne PAS utiliser execute_cli avec cat, heredoc (<<) ou echo > fichier, "
+        "surtout sur Windows où ces commandes Linux échouent. "
+        "Ensuite lance le script avec execute_cli : `python C:\\Users\\...\\script.py`. "
+        "Pour un script qui tourne en boucle (autoclicker, watcher), "
+        "utilise `start python C:\\chemin\\script.py` afin de ne pas bloquer Jarvis."
+    )
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Chemin absolu ou avec ~ vers le fichier à écrire.",
+            },
+            "content": {
+                "type": "string",
+                "description": "Contenu texte complet du fichier.",
+            },
+        },
+        "required": ["path", "content"],
+    }
+
+    def __init__(self, allowed_roots: list[Path], projects_dir: Path | None = None) -> None:
+        self._allowed_roots = [r.resolve() for r in allowed_roots]
+        if projects_dir is not None:
+            self.description = (
+                f"{self.description} "
+                f"PROJETS : crée chaque nouveau projet dans {projects_dir}\\<nom-du-projet>\\ "
+                f"(ex: {projects_dir}\\autoclick\\autoclick.py) — un sous-dossier par projet."
+            )
+
+    def _is_allowed(self, path: Path) -> bool:
+        resolved = path.resolve()
+        return any(resolved == root or resolved.is_relative_to(root) for root in self._allowed_roots)
+
+    async def execute(self, path: str, content: str, **_: object) -> ToolResult:
+        if not _perms.get("files"):
+            return ToolResult(
+                content=(
+                    "Permission fichiers désactivée. Demande à l'utilisateur d'activer "
+                    "l'icône dossier en haut à gauche de Jarvis, puis réessaie write_file. "
+                    "Tu PEUX créer des fichiers une fois cette permission active."
+                ),
+                is_error=True,
+            )
+
+        p = Path(path).expanduser().resolve()
+        if p.name.lower() in _WRITE_BLOCKED_NAMES or p.suffix.lower() in {".env"}:
+            return ToolResult(
+                content=f"Écriture refusée sur un fichier sensible : {p.name}",
+                is_error=True,
+            )
+        if not self._is_allowed(p):
+            return ToolResult(
+                content="Accès refusé : hors des répertoires autorisés.",
+                is_error=True,
+            )
+        if len(content) > _MAX_WRITE_SIZE:
+            return ToolResult(
+                content=f"Contenu trop grand ({len(content)} octets, max {_MAX_WRITE_SIZE}).",
+                is_error=True,
+            )
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+            logger.info("File written", path=str(p), chars=len(content))
+            return ToolResult(content=f"Fichier écrit : {p} ({len(content)} caractères).")
+        except OSError as e:
+            collector.error("JRV-TOL-001", "JRV-TOL-001", cause=e)
+            return ToolResult(content=f"Erreur d'écriture : {e}", is_error=True)

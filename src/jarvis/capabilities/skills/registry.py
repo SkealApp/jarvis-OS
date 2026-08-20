@@ -128,6 +128,7 @@ class SkillRegistry:
                 "description": s.description,
                 "tags": s.tags,
                 "type": s.metadata.get("type", "conversational"),
+                "folder": Path(s.metadata["__dir"]).name if s.metadata.get("__dir") else s.name,
                 "requires_env": s.metadata.get("requires_env", []),
                 "requires_tools": s.metadata.get("requires_tools", []),
             }

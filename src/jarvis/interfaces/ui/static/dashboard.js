@@ -284,10 +284,13 @@
     row.appendChild(bar);
 
     const inner = el("div", { class: "row-stripe-inner" });
-    inner.appendChild(el("div", { class: "row-stripe-title", text: c.name }));
+    inner.appendChild(el("div", { class: "row-stripe-title", text: c.label || c.name }));
     const meta = el("div", { class: "row-stripe-meta" });
-    meta.appendChild(el("span", { class: "badge badge--solid", text: "SKILL" }));
-    if (c.sandbox_notes) {
+    const kind = ({ view: "VUE", preset: "ROUTINE", conversational: "SKILL" })[c.type] || "SKILL";
+    meta.appendChild(el("span", { class: "badge badge--solid", text: kind }));
+    if (c.description) {
+      meta.appendChild(el("span", { text: String(c.description).slice(0, 80) }));
+    } else if (c.sandbox_notes) {
       meta.appendChild(el("span", { text: (c.sandbox_notes || "").slice(0, 80) }));
     }
     inner.appendChild(meta);
@@ -313,7 +316,7 @@
       if (!confirm("Rejeter définitivement « " + c.name + " » ?")) return;
       reject.disabled = true; reject.textContent = "…";
       try {
-        await J.api.post("/api/skills/lab/" + encodeURIComponent(c.name) + "/reject");
+        await J.api.post("/api/skills/lab/" + encodeURIComponent(c.name) + "/reject?delete_files=true");
         J.notify({ kind: "info", text: c.name + " rejetée" });
         renderInitiatives();
       } catch (err) {

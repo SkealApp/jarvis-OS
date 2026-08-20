@@ -29,6 +29,7 @@ config/google_credentials.json
 config/google_gmail_token.json
 config/google_token.json
 config/spotify_token.json
+config/runtime_permissions.json
 
 # ── Modèles ML (binaires lourds — à télécharger via install.sh)
 yolov8n.pt

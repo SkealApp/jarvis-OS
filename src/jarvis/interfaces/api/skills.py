@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from dotenv import dotenv_values
 from fastapi import APIRouter, Request
 
@@ -15,7 +17,7 @@ from jarvis.capabilities.skills.registry import skill_registry
 from jarvis.engine.background.notifications import broadcast_event
 from jarvis.kernel.error_collector import collector  # jrv: autofix
 from jarvis.kernel.http_errors import raise_api_error
-from jarvis.kernel.paths import SKILLS_INSTALLED_DIR, UI_STATIC_DIR
+from jarvis.kernel.paths import SKILLS_CANDIDATES_DIR, SKILLS_INSTALLED_DIR, UI_STATIC_DIR
 from jarvis.providers.audio.tts import tts_engine
 
 router = APIRouter()
@@ -39,7 +41,7 @@ def _lifecycle(request: Request):  # noqa: ANN202
 
 
 def _record_to_dict(record) -> dict:  # noqa: ANN001
-    return {
+    payload = {
         "name": record.name,
         "status": record.status.value,
         "confidence": record.confidence,
@@ -52,6 +54,28 @@ def _record_to_dict(record) -> dict:  # noqa: ANN001
         "archived_at": record.archived_at.isoformat() if record.archived_at else None,
         "updated_at": record.updated_at.isoformat(),
     }
+    payload.update(_candidate_yaml_meta(record.name))
+    return payload
+
+
+def _candidate_yaml_meta(name: str) -> dict:
+    """Type / label / description lus depuis skill.yaml (candidates ou installed)."""
+    import yaml
+
+    for root in (SKILLS_CANDIDATES_DIR, SKILLS_INSTALLED_DIR):
+        yaml_path = root / name / "skill.yaml"
+        if not yaml_path.exists():
+            continue
+        try:
+            meta = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return {}
+        return {
+            "type": meta.get("type", "conversational"),
+            "label": meta.get("label") or name,
+            "description": meta.get("description", ""),
+        }
+    return {}
 
 
 @router.get("/api/skills/lab/candidates")
@@ -92,6 +116,12 @@ async def promote_lab_skill(name: str, request: Request) -> dict:
             f"Promotion refusée pour '{name}' : skill inconnue, non en "
             "SANDBOXED_PASS, ou collision avec une skill installée.",
         )
+    # Rafraîchit les tools exposés + recharge les vues côté frontend
+    # (nécessaire pour les vues promues, inoffensif pour les autres types).
+    tool_registry = getattr(request.app.state, "tool_registry", None)
+    if tool_registry:
+        tool_registry.replace_skill_tools(*skill_registry.get_all_tools())
+    broadcast_event({"type": "reload_views"})
     return {"ok": True, "record": _record_to_dict(record)}
 
 
@@ -203,6 +233,12 @@ async def uninstall_skill(skill_name: str, request: Request) -> dict:
 
     result = skill_installer.uninstall(skill_name)
     if result.get("success"):
+        lc = getattr(request.app.state, "skill_lifecycle", None)
+        if lc is not None:
+            try:
+                lc.archive(skill_name)
+            except Exception as exc:  # noqa: BLE001
+                collector.error("JRV-SKL-001", "JRV-SKL-001", cause=exc)
         tool_registry = getattr(request.app.state, "tool_registry", None)
         if tool_registry:
             tool_registry.replace_skill_tools(*skill_registry.get_all_tools())
@@ -277,6 +313,7 @@ async def get_presets() -> dict:
                 "triggers": r.get_triggers(),
                 "platforms": r.get_platforms(),
                 "steps_count": len(r.get_steps()),
+                "folder": Path(r.metadata["__dir"]).name if r.metadata.get("__dir") else r.name,
             }
             for r in presets.values()
         ]

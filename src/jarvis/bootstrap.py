@@ -40,7 +40,7 @@ from jarvis.capabilities.tools.browser import BrowserTool
 from jarvis.capabilities.tools.calendar import CalendarCreateTool, CalendarListTool
 from jarvis.capabilities.tools.capability import ReportMissingCapabilityTool
 from jarvis.capabilities.tools.cli import CLIRunnerTool, ExecuteCLITool
-from jarvis.capabilities.tools.filesystem import FindFilesTool, ReadFileTool
+from jarvis.capabilities.tools.filesystem import FindFilesTool, ReadFileTool, WriteFileTool
 from jarvis.capabilities.tools.gmail import GmailListTool, send_gmail_draft
 from jarvis.capabilities.tools.memory import (
     CrossSessionRecallTool,
@@ -52,9 +52,16 @@ from jarvis.capabilities.tools.notion import NotionTasksTool
 from jarvis.capabilities.tools.preset import ExecutePresetTool
 from jarvis.capabilities.tools.registry import ToolRegistry
 from jarvis.capabilities.tools.show_view import ShowViewTool
-from jarvis.capabilities.tools.skills import SkillCreateTool, SkillImproveTool, SkillListTool
+from jarvis.capabilities.tools.skills import (
+    PresetCreateTool,
+    SkillCreateTool,
+    SkillImproveTool,
+    SkillListTool,
+    ViewCreateTool,
+)
 from jarvis.capabilities.tools.deezer import DeezerTool
 from jarvis.capabilities.tools.spotify import SpotifyTool
+from jarvis.capabilities.tools.strava import StravaTool
 from jarvis.capabilities.tools.subagent import ScriptRPCTool, SpawnSubagentTool
 from jarvis.capabilities.tools.vision import VisionTool
 from jarvis.capabilities.tools.weather import WeatherTool
@@ -300,6 +307,10 @@ def build(
         BrowserTool(),
         VisionTool(visual_memory=_visual_memory),
         ReadFileTool(allowed_roots=allowed_roots),
+        WriteFileTool(
+            allowed_roots=allowed_roots,
+            projects_dir=Path(settings.projects_dir).expanduser(),
+        ),
         FindFilesTool(allowed_roots=allowed_roots),
         CLIRunnerTool(whitelist_path=Path(settings.cli_whitelist_path)),
         ExecuteCLITool(),
@@ -321,10 +332,12 @@ def build(
     notifications = NotificationQueue()
     proactive_queue = ProactiveQueue()
 
-    # ShowViewTool et DeezerTool dépendent de proactive_queue, donc enregistrés après.
+    # ShowViewTool, DeezerTool et StravaTool dépendent de proactive_queue, donc enregistrés après.
     tool_registry.register(ShowViewTool(broadcast_event=proactive_queue.broadcast_event))
     if settings.music_provider == "deezer":
         tool_registry.register(DeezerTool(broadcast_event=proactive_queue.broadcast_event))
+    if settings.strava_client_id.strip():
+        tool_registry.register(StravaTool(broadcast_event=proactive_queue.broadcast_event))
 
     budget = BudgetGuard(
         settings=settings,
@@ -349,6 +362,8 @@ def build(
     )
     tool_registry.register(
         SkillCreateTool(lab=skill_lab),
+        PresetCreateTool(lab=skill_lab),
+        ViewCreateTool(lab=skill_lab),
         SkillImproveTool(synthesizer=skill_synthesizer),
         SkillListTool(),
     )

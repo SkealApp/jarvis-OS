@@ -201,6 +201,13 @@ class Settings(BaseSettings):
         default=["~/"],
         description="Répertoires racines autorisés pour la lecture/recherche de fichiers.",
     )
+    projects_dir: str = Field(
+        default="~/Documents/Atlas",
+        description=(
+            "Répertoire où l'IA crée les projets utilisateur "
+            "(un sous-dossier par projet, ex: Atlas/autoclick/)."
+        ),
+    )
     google_credentials_path: str = Field(
         default="config/google_credentials.json",
         description="Chemin vers le fichier credentials OAuth2 Google.",
@@ -381,6 +388,31 @@ class Settings(BaseSettings):
             "Cookie ARL Deezer (alternative à OAuth quand les inscriptions d'app sont fermées). "
             "Récupérable depuis deezer.com → DevTools → Application → Cookies → arl."
         ),
+    )
+
+    # ── Strava ────────────────────────────────────────────────
+    strava_client_id: str = Field(
+        default="",
+        description=(
+            "Client ID de l'application Strava. "
+            "Créer une app sur developers.strava.com/settings/api."
+        ),
+    )
+    strava_client_secret: SecretStr = Field(
+        default=SecretStr(""),
+        description="Client Secret Strava (jamais exposé au frontend ni dans les logs).",
+    )
+    strava_refresh_token: SecretStr = Field(
+        default=SecretStr(""),
+        description=(
+            "Refresh token OAuth2 Strava (obtenu via le premier flow d'autorisation). "
+            "Stocké ici comme valeur initiale ; le client le met à jour dans "
+            "config/strava_token.json si Strava renvoie un nouveau rolling token."
+        ),
+    )
+    strava_token_path: str = Field(
+        default="config/strava_token.json",
+        description="Fichier de cache du token Strava (généré automatiquement).",
     )
 
     # ── Proactivité ───────────────────────────────────────────
