@@ -10,8 +10,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jarvis.capabilities.tools.memory import MemoryLoadTopicTool, MemorySearchTool
+from jarvis.capabilities.tools.memory import (
+    MemoryLoadTopicTool,
+    MemorySearchTool,
+    MemoryTopicWriteTool,
+)
 from jarvis.providers.memory.index import MemoryIndex
+from jarvis.providers.memory.kernel import MemoryKernel
+from jarvis.providers.memory.retrieval import MemoryRetrieval
+from jarvis.providers.memory.schemas import Fact
 from jarvis.providers.memory.search import VectorIndex, _chunk_text
 from jarvis.providers.memory.sessions import SessionStore
 from jarvis.providers.memory.topics import TopicStore
@@ -55,11 +62,16 @@ def test_session_store_list_recent(tmp_path: Path) -> None:
 
 
 # ── MemoryIndex ───────────────────────────────────────────────
+# NB : les fixtures écrivent/lisent explicitement en UTF-8. Sans encoding,
+# write_text() utilise cp1252 sur Windows et le « — » (0x97) fait planter la
+# lecture UTF-8 de MemoryIndex — bug des tests, pas du code de prod.
 
 
 def test_memory_index_read(tmp_path: Path) -> None:
     md = tmp_path / "MEMORY.md"
-    md.write_text("# Index\n\n## Utilisateur\n- profile: `topics/user.md` — Barth\n")
+    md.write_text(
+        "# Index\n\n## Utilisateur\n- profile: `topics/user.md` — Barth\n", encoding="utf-8"
+    )
     idx = MemoryIndex(tmp_path)
     content = idx.read()
     assert "profile" in content
@@ -67,11 +79,11 @@ def test_memory_index_read(tmp_path: Path) -> None:
 
 def test_memory_index_add_pointer_new_section(tmp_path: Path) -> None:
     md = tmp_path / "MEMORY.md"
-    md.write_text("# Index\n")
+    md.write_text("# Index\n", encoding="utf-8")
     idx = MemoryIndex(tmp_path)
     idx.add_pointer("Projets actifs", "ipod", "topics/project_ipod.md", "DAP iPod PCM5102A")
 
-    content = md.read_text()
+    content = md.read_text(encoding="utf-8")
     assert "ipod" in content
     assert "project_ipod.md" in content
     assert "DAP iPod PCM5102A" in content
@@ -79,11 +91,14 @@ def test_memory_index_add_pointer_new_section(tmp_path: Path) -> None:
 
 def test_memory_index_update_existing_pointer(tmp_path: Path) -> None:
     md = tmp_path / "MEMORY.md"
-    md.write_text("# Index\n\n## Projets actifs\n- ipod: `topics/old.md` — Ancienne description\n")
+    md.write_text(
+        "# Index\n\n## Projets actifs\n- ipod: `topics/old.md` — Ancienne description\n",
+        encoding="utf-8",
+    )
     idx = MemoryIndex(tmp_path)
     idx.add_pointer("Projets actifs", "ipod", "topics/project_ipod.md", "Nouvelle description")
 
-    content = md.read_text()
+    content = md.read_text(encoding="utf-8")
     assert "Nouvelle description" in content
     assert "Ancienne description" not in content
     # Un seul pointeur ipod
@@ -93,11 +108,11 @@ def test_memory_index_update_existing_pointer(tmp_path: Path) -> None:
 def test_memory_index_add_pointer_existing_section(tmp_path: Path) -> None:
     md = tmp_path / "MEMORY.md"
     initial = "# Index\n\n## Projets actifs\n- jarvis: `topics/jarvis.md` — Jarvis\n\n## Autre\n"
-    md.write_text(initial)
+    md.write_text(initial, encoding="utf-8")
     idx = MemoryIndex(tmp_path)
     idx.add_pointer("Projets actifs", "alfred", "topics/alfred.md", "Bras robotisé")
 
-    content = md.read_text()
+    content = md.read_text(encoding="utf-8")
     assert "alfred" in content
     assert "Bras robotisé" in content
 
@@ -361,3 +376,178 @@ def test_chunk_text_handles_short_and_long(tmp_path: Path) -> None:
     assert len(chunks) >= 2
     # Premier chunk : 500 mots
     assert len(chunks[0].split()) == 500
+
+
+# ── memory_write : création de nouveaux topics (create_if_missing) ────
+
+
+async def test_memory_write_refuses_missing_without_flag(
+    tmp_path: Path, fake_vector_index: VectorIndex
+) -> None:
+    """Comportement historique préservé : fichier inexistant sans flag → erreur."""
+    topics_dir = tmp_path / "topics"
+    topics_dir.mkdir()
+    (topics_dir / "user_prefs.md").write_text("# Prefs\n", encoding="utf-8")
+
+    tool = MemoryTopicWriteTool(topics_dir=topics_dir, vector_index=fake_vector_index)
+    result = await tool.execute(filename="nutrition.md", content="# Nutrition\n")
+
+    assert result.is_error
+    assert "introuvable" in result.content.lower()
+    assert "create_if_missing" in result.content
+    assert not (topics_dir / "nutrition.md").exists()
+
+
+async def test_memory_write_creates_and_indexes_new_topic(
+    tmp_path: Path, fake_vector_index: VectorIndex
+) -> None:
+    """create_if_missing=true → fichier créé ET indexé immédiatement."""
+    topics_dir = tmp_path / "topics"
+    content = "# Nutrition\n\nPréférences repas : riche en protéines."
+
+    tool = MemoryTopicWriteTool(topics_dir=topics_dir, vector_index=fake_vector_index)
+    result = await tool.execute(filename="nutrition.md", content=content, create_if_missing=True)
+
+    assert not result.is_error
+    assert "créée et indexée" in result.content
+    assert (topics_dir / "nutrition.md").read_text(encoding="utf-8") == content
+
+    # Indexation immédiate : le doc est retrouvable dans le VectorIndex
+    hits = await fake_vector_index.search(query=content, k=1)
+    assert hits
+    assert hits[0]["doc_id"] == "topic:nutrition.md"
+    assert hits[0]["metadata"]["filename"] == "nutrition.md"
+
+
+async def test_memory_write_create_rejects_invalid_name(
+    tmp_path: Path, fake_vector_index: VectorIndex
+) -> None:
+    """La validation _is_invalid_filename s'applique aussi à la création."""
+    tool = MemoryTopicWriteTool(topics_dir=tmp_path / "topics", vector_index=fake_vector_index)
+    for bad in ["../evil.md", "sub/dir.md", "noext", "evil\\path.md"]:
+        result = await tool.execute(filename=bad, content="x", create_if_missing=True)
+        assert result.is_error, f"Nom invalide accepté : {bad}"
+
+
+async def test_memory_write_update_existing_still_works(
+    tmp_path: Path, fake_vector_index: VectorIndex
+) -> None:
+    topics_dir = tmp_path / "topics"
+    topics_dir.mkdir()
+    (topics_dir / "user_prefs.md").write_text("ancien", encoding="utf-8")
+
+    tool = MemoryTopicWriteTool(topics_dir=topics_dir, vector_index=fake_vector_index)
+    result = await tool.execute(filename="user_prefs.md", content="nouveau contenu")
+
+    assert not result.is_error
+    assert "mise à jour" in result.content
+    assert (topics_dir / "user_prefs.md").read_text(encoding="utf-8") == "nouveau contenu"
+
+
+# ── memory_search : deux couches (facts + topics) + provenance + highlight ────
+
+
+def _kernel_with_music_fact(tmp_path: Path) -> MemoryKernel:
+    kernel = MemoryKernel(tmp_path / "mem.db")
+    kernel.insert_fact(
+        Fact(
+            id="fact_music1",
+            subject="barth",
+            predicate="préfère",
+            object="spotify",
+            category="musique",
+            importance=0.8,
+            confidence=0.9,
+        )
+    )
+    return kernel
+
+
+async def test_memory_search_combines_facts_and_topics(
+    tmp_path: Path, fake_vector_index: VectorIndex
+) -> None:
+    """Une seule requête couvre les DEUX couches, avec provenance explicite."""
+    kernel = _kernel_with_music_fact(tmp_path)
+    await fake_vector_index.add(
+        doc_id="topic:spotify.md",
+        text="spotify musique playlists favorites",
+        metadata={"source": "topic", "filename": "spotify.md"},
+    )
+
+    events: list[dict] = []
+    tool = MemorySearchTool(
+        vector_index=fake_vector_index,
+        retrieval=MemoryRetrieval(kernel),
+        broadcast_event=events.append,
+    )
+    result = await tool.execute(query="spotify", k=5)
+
+    assert not result.is_error
+    # Couche facts avec provenance fact_id
+    assert "== FACTS STRUCTURÉS ==" in result.content
+    assert "[fact:fact_music1]" in result.content
+    assert "confiance 0.90" in result.content
+    # Couche topics avec provenance filename
+    assert "== TOPICS & TRANSCRIPTS ==" in result.content
+    assert "[topic:spotify.md]" in result.content
+
+
+async def test_memory_search_broadcasts_highlight_with_provenance(
+    tmp_path: Path, fake_vector_index: VectorIndex
+) -> None:
+    """Le tool diffuse highlight_nodes avec les identifiants réellement retournés."""
+    kernel = _kernel_with_music_fact(tmp_path)
+    await fake_vector_index.add(
+        doc_id="topic:spotify.md",
+        text="spotify musique playlists",
+        metadata={"source": "topic", "filename": "spotify.md"},
+    )
+
+    events: list[dict] = []
+    tool = MemorySearchTool(
+        vector_index=fake_vector_index,
+        retrieval=MemoryRetrieval(kernel),
+        broadcast_event=events.append,
+    )
+    await tool.execute(query="spotify", k=5)
+
+    highlights = [e for e in events if e.get("command") == "highlight_nodes"]
+    assert len(highlights) == 1
+    evt = highlights[0]
+    assert evt["type"] == "view_command"
+    assert evt["view_id"] == "memory-graph"
+    assert "fact_music1" in evt["params"]["fact_ids"]
+    assert "spotify.md" in evt["params"]["topic_filenames"]
+
+
+async def test_memory_search_without_retrieval_backward_compat(
+    tmp_path: Path, fake_vector_index: VectorIndex
+) -> None:
+    """Sans retrieval injecté (ex: anciens call sites), seule la couche topics répond."""
+    await fake_vector_index.add(
+        doc_id="topic:spotify.md",
+        text="spotify musique",
+        metadata={"source": "topic", "filename": "spotify.md"},
+    )
+    tool = MemorySearchTool(vector_index=fake_vector_index)
+    result = await tool.execute(query="spotify", k=3)
+
+    assert not result.is_error
+    assert "[topic:spotify.md]" in result.content
+    assert "FACTS STRUCTURÉS" not in result.content
+
+
+async def test_memory_search_filters_cold_start_facts(
+    tmp_path: Path, fake_vector_index: VectorIndex
+) -> None:
+    """Les facts du fallback cold-start (relevance=0, hors-sujet) sont écartés."""
+    kernel = _kernel_with_music_fact(tmp_path)
+    events: list[dict] = []
+    tool = MemorySearchTool(
+        vector_index=fake_vector_index,
+        retrieval=MemoryRetrieval(kernel),
+        broadcast_event=events.append,
+    )
+    # "calendrier réunion" ne matche pas le fact musique → pas de section facts
+    result = await tool.execute(query="calendrier réunion", k=5)
+    assert "[fact:" not in result.content

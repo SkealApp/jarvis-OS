@@ -22,6 +22,21 @@ class _ContentBody(BaseModel):
     content: str
 
 
+class _ThemeBody(BaseModel):
+    name: str
+    color: str
+
+
+class _AssignThemeBody(BaseModel):
+    theme: str | None = None
+
+
+class _TopicCreateBody(BaseModel):
+    name: str
+    content: str = ""
+    theme: str | None = None
+
+
 class _CorrectionBody(BaseModel):
     target_fact_id: str
     new_status: str | None = None
@@ -103,6 +118,50 @@ async def put_memory_topic(name: str, body: _ContentBody, request: Request) -> d
     return {"ok": True}
 
 
+@router.post("/api/memory/topics")
+async def create_memory_topic(body: _TopicCreateBody, request: Request) -> dict:
+    """Crée un nouveau fichier thématique depuis l'UI (vue memory-graph).
+
+    Indexe immédiatement dans le VectorIndex (même logique que le PUT) et
+    rattache au thème demandé s'il existe.
+    """
+    from jarvis.capabilities.tools.memory import _is_invalid_filename
+    from jarvis.providers.memory.themes import ThemeStore
+
+    name = body.name.strip()
+    if _is_invalid_filename(name):
+        raise_api_error("JRV-API-004", 400, "Nom invalide (attendu : nom_fichier.md sans chemin)")
+    topics_dir = _mem_dir(request) / "topics"
+    p = topics_dir / name
+    if p.exists():
+        raise_api_error("JRV-API-004", 409, f"Le fichier '{name}' existe déjà.")
+    topics_dir.mkdir(parents=True, exist_ok=True)
+    p.write_text(body.content, encoding="utf-8")
+
+    theme_applied: str | None = None
+    if body.theme:
+        store = ThemeStore(_mem_dir(request))
+        canonical = store.resolve(body.theme)
+        if canonical:
+            store.assign(name, canonical)
+            theme_applied = canonical
+
+    vector_index = getattr(request.app.state, "vector_index", None)
+    if vector_index is not None:
+
+        async def _index_new() -> None:
+            await vector_index.add(
+                doc_id=f"topic:{name}",
+                text=body.content,
+                metadata={"source": "topic", "filename": name},
+            )
+            await vector_index.persist()
+
+        asyncio.create_task(_index_new(), name=f"vector-create-{name}")
+
+    return {"ok": True, "name": name, "theme": theme_applied}
+
+
 @router.delete("/api/memory/topics/{name}")
 async def delete_memory_topic(name: str, request: Request) -> dict:
     if "/" in name or "\\" in name or ".." in name:
@@ -111,6 +170,11 @@ async def delete_memory_topic(name: str, request: Request) -> dict:
     if not p.exists():
         raise_api_error("JRV-API-003", 404, "Fichier introuvable")
     p.unlink()
+
+    # Détache le fichier de son thème éventuel
+    from jarvis.providers.memory.themes import ThemeStore
+
+    ThemeStore(_mem_dir(request)).assign(name, None)
 
     # Retire le document du VectorIndex si disponible
     vector_index = getattr(request.app.state, "vector_index", None)
@@ -172,6 +236,137 @@ async def list_memory_facts(
         }
         for f in facts
     ]
+
+
+# ── Thèmes (groupes colorés de fichiers thématiques) ─────────────────────────
+
+
+@router.get("/api/memory/themes")
+async def list_memory_themes(request: Request) -> dict:
+    from jarvis.providers.memory.themes import ThemeStore
+
+    return {"themes": ThemeStore(_mem_dir(request)).list_themes()}
+
+
+@router.post("/api/memory/themes")
+async def upsert_memory_theme(body: _ThemeBody, request: Request) -> dict:
+    from jarvis.providers.memory.themes import ThemeStore
+
+    try:
+        ThemeStore(_mem_dir(request)).upsert_theme(body.name, body.color)
+    except ValueError as e:
+        raise_api_error("JRV-API-004", 400, str(e))
+    return {"ok": True, "name": body.name.strip(), "color": body.color}
+
+
+@router.delete("/api/memory/themes/{name}")
+async def delete_memory_theme(name: str, request: Request) -> dict:
+    from jarvis.providers.memory.themes import ThemeStore
+
+    if not ThemeStore(_mem_dir(request)).delete_theme(name):
+        raise_api_error("JRV-API-003", 404, f"Thème '{name}' introuvable")
+    return {"ok": True}
+
+
+@router.put("/api/memory/topics/{name}/theme")
+async def assign_topic_theme(name: str, body: _AssignThemeBody, request: Request) -> dict:
+    """Rattache (ou détache si theme=null) un fichier thématique à un thème."""
+    from jarvis.providers.memory.themes import ThemeStore
+
+    if "/" in name or "\\" in name or ".." in name:
+        raise_api_error("JRV-API-004", 400, "Nom invalide")
+    if not (_mem_dir(request) / "topics" / name).exists():
+        raise_api_error("JRV-API-003", 404, "Fichier introuvable")
+    store = ThemeStore(_mem_dir(request))
+    try:
+        store.assign(name, body.theme)
+    except ValueError as e:
+        raise_api_error("JRV-API-004", 400, str(e))
+    return {"ok": True, "name": name, "theme": body.theme}
+
+
+@router.get("/api/memory/facts/{fact_id}")
+async def get_memory_fact_detail(fact_id: str, request: Request) -> dict:
+    """Détail complet d'un fact pour le panneau de la vue memory-graph.
+
+    Inclut l'historique des observations et les contradictions connues
+    (facts SUPERSEDED par celui-ci). Lecture seule.
+    """
+
+    kernel = getattr(request.app.state, "memory_kernel", None)
+    if kernel is None:
+        raise_api_error("JRV-API-005", 503, "Memory Kernel non disponible.")
+    fact = kernel.get_fact(fact_id)
+    if fact is None:
+        raise_api_error("JRV-API-003", 404, f"Fact '{fact_id}' introuvable.")
+
+    observations = [
+        {
+            "id": o.id,
+            "event_id": o.event_id,
+            "observation_type": o.observation_type.value,
+            "confidence_delta": round(o.confidence_delta, 3),
+            "created_at": o.created_at.isoformat(),
+        }
+        for o in kernel.list_observations(fact_id)
+    ]
+
+    # Contradictions connues : facts que celui-ci SUPERSEDE (même logique que
+    # MemoryRetrieval._known_contradictions, inlinée pour rester lecture seule).
+    contradictions = []
+    from jarvis.providers.memory.schemas import RelationType
+
+    for rel in kernel.list_relations(fact_id):
+        if rel.relation_type != RelationType.SUPERSEDES or rel.from_fact_id != fact_id:
+            continue
+        old = kernel.get_fact(rel.to_fact_id)
+        if old is not None:
+            contradictions.append(
+                {
+                    "id": old.id,
+                    "subject": old.subject,
+                    "predicate": old.predicate,
+                    "object": old.object,
+                    "status": old.status.value,
+                    "last_seen_at": old.last_seen_at.isoformat(),
+                }
+            )
+
+    return {
+        "id": fact.id,
+        "subject": fact.subject,
+        "predicate": fact.predicate,
+        "object": fact.object,
+        "category": fact.category,
+        "status": fact.status.value,
+        "confidence": round(fact.confidence, 3),
+        "support_count": fact.support_count,
+        "decay_policy": fact.decay_policy.value,
+        "importance": round(fact.importance, 3),
+        "created_at": fact.created_at.isoformat(),
+        "last_seen_at": fact.last_seen_at.isoformat(),
+        "observations": observations,
+        "contradictions": contradictions,
+    }
+
+
+@router.get("/api/memory/graph")
+async def get_memory_graph(request: Request, limit: int = 300) -> dict:
+    """Graphe mémoire {nodes, links, meta} pour la vue memory-graph (D3).
+
+    Léger par design : pas de contenu Markdown ni d'observations ici —
+    le détail se charge au clic via /api/memory/facts/{id} et
+    /api/memory/topics/{name}.
+    """
+
+    kernel = getattr(request.app.state, "memory_kernel", None)
+    if kernel is None:
+        raise_api_error("JRV-API-005", 503, "Memory Kernel non disponible.")
+    from jarvis.providers.memory.graph import build_memory_graph
+
+    topics_dir = _mem_dir(request) / "topics"
+    limit = max(10, min(1000, limit))
+    return await asyncio.to_thread(build_memory_graph, kernel, topics_dir, limit)
 
 
 @router.post("/api/memory/correct")

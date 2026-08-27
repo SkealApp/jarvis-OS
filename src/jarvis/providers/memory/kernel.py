@@ -414,16 +414,26 @@ class MemoryKernel:
                 "WHERE from_fact_id=? OR to_fact_id=? ORDER BY created_at",
                 (fact_id, fact_id),
             ).fetchall()
-        return [
-            FactRelation(
-                id=r["id"],
-                from_fact_id=r["from_fact_id"],
-                to_fact_id=r["to_fact_id"],
-                relation_type=RelationType(r["relation_type"]),
-                created_at=datetime.fromisoformat(r["created_at"]),
-            )
-            for r in rows
-        ]
+        return [self._row_to_relation(r) for r in rows]
+
+    def list_all_relations(self, limit: int | None = None) -> list[FactRelation]:
+        """Toutes les relations de la base (lecture seule — pour la vue graphe)."""
+        sql = "SELECT * FROM fact_relations ORDER BY created_at"
+        if limit is not None:
+            sql += f" LIMIT {int(limit)}"
+        with self._conn() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [self._row_to_relation(r) for r in rows]
+
+    @staticmethod
+    def _row_to_relation(r: sqlite3.Row) -> FactRelation:
+        return FactRelation(
+            id=r["id"],
+            from_fact_id=r["from_fact_id"],
+            to_fact_id=r["to_fact_id"],
+            relation_type=RelationType(r["relation_type"]),
+            created_at=datetime.fromisoformat(r["created_at"]),
+        )
 
     # ── FTS5 ──────────────────────────────────────────────────────────────────
 

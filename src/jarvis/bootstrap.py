@@ -40,6 +40,7 @@ from jarvis.capabilities.tools.browser import BrowserTool
 from jarvis.capabilities.tools.calendar import CalendarCreateTool, CalendarListTool
 from jarvis.capabilities.tools.capability import ReportMissingCapabilityTool
 from jarvis.capabilities.tools.cli import CLIRunnerTool, ExecuteCLITool
+from jarvis.capabilities.tools.deezer import DeezerTool
 from jarvis.capabilities.tools.filesystem import FindFilesTool, ReadFileTool, WriteFileTool
 from jarvis.capabilities.tools.gmail import GmailListTool, send_gmail_draft
 from jarvis.capabilities.tools.memory import (
@@ -59,7 +60,6 @@ from jarvis.capabilities.tools.skills import (
     SkillListTool,
     ViewCreateTool,
 )
-from jarvis.capabilities.tools.deezer import DeezerTool
 from jarvis.capabilities.tools.spotify import SpotifyTool
 from jarvis.capabilities.tools.strava import StravaTool
 from jarvis.capabilities.tools.subagent import ScriptRPCTool, SpawnSubagentTool
@@ -116,6 +116,7 @@ from jarvis.providers.memory.index import MemoryIndex
 from jarvis.providers.memory.ingest import MemoryIngest
 from jarvis.providers.memory.kernel import MemoryKernel
 from jarvis.providers.memory.mirror import MemoryMirror
+from jarvis.providers.memory.retrieval import MemoryRetrieval
 from jarvis.providers.memory.search import FTSIndex, VectorIndex
 from jarvis.providers.memory.sessions import SessionStore
 from jarvis.providers.memory.topics import TopicStore
@@ -319,8 +320,9 @@ def build(
         notion_tasks_tool,
         MemoryTopicWriteTool(vector_index=vector_index),
         MemoryLoadTopicTool(topic_store=topic_store),
-        MemorySearchTool(vector_index=vector_index),
-        *([] if settings.music_provider == "deezer" else [SpotifyTool()]),  # Deezer enregistré après proactive_queue
+        # MemorySearchTool enregistré après proactive_queue (broadcast highlight_nodes).
+        # Deezer aussi enregistré après proactive_queue.
+        *([] if settings.music_provider == "deezer" else [SpotifyTool()]),
         GmailListTool(credentials_path=_google_creds, token_path=_gmail_token),
         ExecutePresetTool(tool_registry=tool_registry, tts_engine=tts_engine),
         CrossSessionRecallTool(fts_index=fts_index, vector_index=vector_index),
@@ -332,8 +334,16 @@ def build(
     notifications = NotificationQueue()
     proactive_queue = ProactiveQueue()
 
-    # ShowViewTool, DeezerTool et StravaTool dépendent de proactive_queue, donc enregistrés après.
+    # ShowViewTool, MemorySearchTool, DeezerTool et StravaTool dépendent de
+    # proactive_queue (broadcast vers l'UI), donc enregistrés après.
     tool_registry.register(ShowViewTool(broadcast_event=proactive_queue.broadcast_event))
+    tool_registry.register(
+        MemorySearchTool(
+            vector_index=vector_index,
+            retrieval=MemoryRetrieval(memory_kernel),
+            broadcast_event=proactive_queue.broadcast_event,
+        )
+    )
     if settings.music_provider == "deezer":
         tool_registry.register(DeezerTool(broadcast_event=proactive_queue.broadcast_event))
     if settings.strava_client_id.strip():

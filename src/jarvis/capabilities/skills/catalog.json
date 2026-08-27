@@ -144,6 +144,18 @@
       "requires_env": []
     },
     {
+      "name": "memory-graph",
+      "version": "1.0.0",
+      "type": "view",
+      "author": "local",
+      "description": "Vue graphe « cerveau » de la mémoire : facts structurés, relations et fichiers thématiques en réseau interactif (D3).",
+      "tags": ["view", "memory", "graph", "brain", "knowledge"],
+      "path": "views/memory-graph",
+      "static_files": [],
+      "requires_tools": [],
+      "requires_env": []
+    },
+    {
       "name": "memory-map",
       "version": "1.0.0",
       "type": "view",

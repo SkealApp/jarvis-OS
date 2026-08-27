@@ -5,7 +5,7 @@
   pointer-events: auto;
   padding: 22px 24px;
   transform-origin: top left;
-  transition: transform 0.35s cubic-bezier(.2,.8,.25,1);
+  transition: transform 0.35s cubic-bezier(.2,.8,.25,1), opacity 0.3s ease;
 }
 
 /* Pill unique — verre dépoli macOS renforcé */
@@ -680,7 +680,7 @@ body[data-mode="home"] #j-rooms-mc {
 }
 
 /* Channel animation */
-.home-channel { animation: channelIn .5s .3s cubic-bezier(.2,.8,.25,1) both; }
+.home-channel { animation: channelIn .5s .3s cubic-bezier(.2,.8,.25,1) both; transition: opacity .3s ease; }
 @keyframes channelIn {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -689,11 +689,25 @@ body[data-mode="home"] #j-rooms-mc {
 /* ── Signature top-right ── */
 .home-signature {
   transform-origin: top right;
-  transition: transform 0.35s cubic-bezier(.2,.8,.25,1);
+  transition: transform 0.35s cubic-bezier(.2,.8,.25,1), opacity 0.3s ease;
 }
 
 /* ── Vue active : source de vérité unique ── */
 body.view-active .home-orb-wrap  { opacity: 0; }
 body.view-active #orb-canvas     { pointer-events: none; }   /* le canvas a pointer-events:auto explicite, la règle sur le parent ne suffit pas */
-body.view-active .home-controls  { transform: scale(0.6); }
-body.view-active .home-signature { transform: scale(0.6); }
+/* Barre de contrôles : glisse SOUS le titre de la vue (aligne x=32px comme les
+   titres, y≈74px sous le bloc titre), pleine taille — plus de scale(0.6).
+   translate plutôt que position:fixed pour ne pas casser le flex space-between
+   de .home-top. */
+body.view-active .home-controls  { transform: translate(-24px, 20px) scale(1); pointer-events: auto; }
+/* Atlas + horloge : masqués sur TOUTE vue. Le bloc .home-signature fait
+   360×250px en haut à droite et recouvrait Éditer / Thème / ＋ Fichier
+   (home-top est z-index 10, les vues sont z-index 2). */
+body.view-active .home-signature { opacity: 0; pointer-events: none; }
+body.view-active .home-top       { pointer-events: none; }
+/* Module passif bas-droite (dernier message) : masqué tant qu'une vue est affichée.
+   !important requis : l'animation channelIn (fill both) fige opacity:1 sinon. */
+body.view-active .home-channel   { opacity: 0 !important; pointer-events: none !important; }
+
+/* ── Panneau large ouvert (fichier thématique) : cache aussi la barre de contrôles. ── */
+body.view-panel-wide .home-controls  { opacity: 0; pointer-events: none; }

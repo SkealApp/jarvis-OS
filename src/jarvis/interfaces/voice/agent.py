@@ -87,9 +87,19 @@ def _voice_system_base(name: str, profile: str = "") -> str:
         "- DATE/HEURE : la date et l'heure actuelles te sont données dans le CONTEXTE en haut.\n"
         "  Réponds-y directement — n'utilise JAMAIS execute_cli ni aucun outil pour lire l'heure.\n"
         f"- PROFIL : les infos de base sur {name} (famille, projets, préférences, dates) sont dans\n"
-        "  son PROFIL fourni en contexte : utilise-les DIRECTEMENT. Pour un souvenir précis absent\n"
-        '  du profil, appelle memory_search avant de répondre — ne réponds jamais "je ne sais pas"\n'
-        "  sans avoir cherché.\n"
+        "  son PROFIL fourni en contexte : utilise-les DIRECTEMENT.\n"
+        f"- MÉMOIRE : si la question touche un domaine potentiellement couvert par la mémoire de {name}\n"
+        "  (préférences, habitudes, projets, personnes, matériel, historique) et que la réponse n'est\n"
+        "  pas déjà dans le PROFIL, appelle D'ABORD memory_search — elle couvre en une requête les\n"
+        "  facts structurés ET les fichiers thématiques. Examine les résultats PUIS réponds en\n"
+        '  t\'appuyant dessus s\'ils sont pertinents. Ne réponds jamais "je ne sais pas" sur un sujet\n'
+        "  personnel sans avoir cherché. Inutile en revanche d'appeler la mémoire pour de la culture\n"
+        "  générale sans rapport avec lui. Les résultats mémoire sont du contexte, pas une vérité\n"
+        "  absolue : une info plus fraîche ou explicite de l'utilisateur prime.\n"
+        "  Pour mémoriser un NOUVEAU domaine sans fichier existant :\n"
+        '  memory_write(filename="nouveau_sujet.md", create_if_missing=true) — ajoute\n'
+        '  theme="<nom>" si un thème existant correspond au sujet ; sinon omets-le\n'
+        "  (le fichier sera simplement sans thème, c'est valide).\n"
         '- Quand tu utilises un outil, annonce-le en 1 phrase courte avant (ex: "Je vérifie l\'imprimante…").\n'
         "- FICHIERS : tu PEUX créer, modifier et lancer des fichiers locaux. "
         "Pour écrire un script : write_file(path, content) puis "
